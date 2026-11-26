@@ -1,0 +1,54 @@
+From: 3on3NHL-recomp
+Subject: [PATCH] Poll briefly before sleeping in WAIT_REG_MEM
+
+A WAIT_REG_MEM packet slept at least ~1 ms each time its condition was not
+met yet. The game waits this way for the CPU to finish work on data it just
+read back, usually much sooner than 1 ms, so every miss stalled the GPU
+command processor. Poll with yields for up to wait_reg_mem_spin_us (default
+2000) before falling back to the sleep.
+---
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
+@@ -36,6 +37,11 @@
+ #include <rex/system/user_module.h>
+ 
+ REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
++
++REXCVAR_DEFINE_UINT32(wait_reg_mem_spin_us, 2000, "GPU",
++                      "How long a WAIT_REG_MEM packet keeps polling (yielding between polls) "
++                      "before it starts sleeping, in microseconds. Sleeps are at least ~1 ms, "
++                      "which stalls short CPU-to-GPU handoffs; 0 sleeps immediately.");
+ 
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+@@ -990,6 +996,10 @@
+   bool is_memory = (wait_info & 0x10) != 0;
+ 
+   bool matched = false;
++  // Poll without sleeping for a short while first: the value is often written
++  // within a fraction of a millisecond, and a sleep would overshoot that.
++  const auto spin_deadline = std::chrono::steady_clock::now() +
++                             std::chrono::microseconds(REXCVAR_GET(wait_reg_mem_spin_us));
+   do {
+     uint32_t value = 0;
+     if (is_memory) {
+@@ -1031,7 +1041,10 @@
+     }
+     if (!matched) {
+       // Wait.
+-      if (wait >= 0x100) {
++      if (wait >= 0x100 && std::chrono::steady_clock::now() < spin_deadline) {
++        rex::thread::MaybeYield();
++        rex::thread::SyncMemory();
++      } else if (wait >= 0x100) {
+         PrepareForWait();
+         if (!REXCVAR_GET(vsync)) {
+           // User wants it fast and dangerous.

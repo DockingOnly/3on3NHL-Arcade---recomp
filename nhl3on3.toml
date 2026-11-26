@@ -13,6 +13,11 @@ gpu_allow_invalid_fetch_constants = true
 # Text, the scoreboard and team-colored equipment are drawn on the GPU and read back by the game.
 readback_resolve = "full"
 
+# Work out how far down a render target each draw really reaches. Without it, every time the
+# game switches its depth buffer between MSAA modes (several times per frame) the whole EDRAM
+# is copied, which halves the frame rate at higher resolution_scale.
+execute_unclipped_draw_vs_on_cpu = true
+
 # --- Online play (ported from 3on3ArcadeRecomp) ---
 # Emulate a signed-in Xbox LIVE profile and the XNet stack.
 online = true
