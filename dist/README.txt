@@ -34,3 +34,10 @@ Known issues
 - Higher internal resolution (--draw_resolution_scale_x/y) breaks text and some textures.
 
 Licenses are in the licenses folder.
+
+Legal
+-----
+This is an unofficial fan project. It is not affiliated with or endorsed by
+Electronic Arts, EA Sports, the NHL or Microsoft. 3 on 3 NHL Arcade and all of
+its assets belong to Electronic Arts; NHL names and logos are trademarks of the
+National Hockey League. No game files are included.

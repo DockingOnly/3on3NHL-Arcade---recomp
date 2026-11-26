@@ -17,6 +17,12 @@ The release contains code from these projects. Their license texts are in
 | [toml++](https://github.com/marzer/tomlplusplus) | MIT | `rexruntime.dll` (settings file loader) |
 | [SIMDe](https://github.com/simd-everywhere/simde) | MIT | `nhl3on3.exe` |
 | [UTF8-CPP](https://github.com/nemtrif/utfcpp) | Boost Software License 1.0 | header-only, used by the ReXGlue runtime |
+| [3on3ArcadeRecomp](https://github.com/startupandhold/3on3ArcadeRecomp) by startupandhold (online play: Xbox LIVE/XNet emulation, tunnel client, lockstep relay, team lobby, roster loader) | MIT | `nhl3on3.exe` |
+| [stb_image](https://github.com/nothings/stb) by Sean Barrett (`thirdparty/stb_image.h`, roster-pack art) | MIT or public domain (MIT chosen) | `nhl3on3.exe` |
+
+Patch `0004` in [`patches/rexglue`](patches/rexglue/README.md) ports the `resolve_downscale`
+shader from [Xenia Canary](https://github.com/xenia-canary/xenia-canary) (BSD 3-Clause, the
+same license as the Xenia-derived code in ReXGlue, whose notice is in `ReXGlue.txt`).
 
 The launcher is a .NET 8 application. The self-contained build includes Microsoft's .NET runtime,
 redistributed under the Microsoft .NET Library License (`dotnet-LICENSE.txt`), with its
