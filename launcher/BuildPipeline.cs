@@ -39,6 +39,7 @@ public sealed partial class BuildPipeline(GameSource source, ToolchainStatus too
     StreamWriter? _log;
     readonly List<string> _errors = [];
     bool _outOfMemory;
+    bool _recompilerCrashed;
 
     string WorkSrc => Path.Combine(AppPaths.WorkDir, "src");
     string WorkBin => Path.Combine(AppPaths.WorkDir, "bin");
@@ -255,7 +256,9 @@ public sealed partial class BuildPipeline(GameSource source, ToolchainStatus too
     async Task CompileAsync(Toolchain t, Dictionary<string, string> env, CancellationToken cancel)
     {
         int jobs = Jobs();
-        Begin(Stage.Compile, "Starting the compiler");
+        // Ninja first re-checks the recompiled code (its command changed with the second
+        // configure); that takes about as long as the recompile and rewrites nothing.
+        Begin(Stage.Compile, "Checking the recompiled code");
         Log($"Compiling with {jobs} parallel jobs ({Environment.ProcessorCount} CPU threads, " +
             $"{GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >> 30} GB RAM{(LowMemoryMode ? ", low-memory mode" : "")})");
         await RunCheckedAsync(t.CMake, ["--build", WorkBin, "--parallel", jobs.ToString()], env, line =>
@@ -272,12 +275,16 @@ public sealed partial class BuildPipeline(GameSource source, ToolchainStatus too
         ui.SetStage(Stage.Compile, StageState.Done);
     }
 
-    static int Jobs()
+    static int Jobs() => Jobs((long)Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (double)(1L << 30)),
+        Environment.ProcessorCount, LowMemoryMode);
+
+    /// <summary>Parallel compiler jobs for a PC with this much RAM and these many CPU threads.</summary>
+    internal static int Jobs(long ramGb, int cpuThreads, bool lowMemory)
     {
-        long ramGb = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >> 30;
-        // The generated files are large; give each compiler about 2 GB.
-        int jobs = Math.Clamp(Math.Min(Environment.ProcessorCount, (int)Math.Max(1, ramGb / 2)), 1, 64);
-        return LowMemoryMode ? Math.Max(1, jobs / 2) : jobs;
+        // Leave 2 GB for Windows, then one compiler per GB. Measured on the full build: 15 jobs
+        // peaked at 3.7 GB together and 7 jobs at 2.75 GB; the largest file needs 0.7-1.4 GB.
+        int jobs = Math.Clamp(Math.Min(cpuThreads, (int)Math.Max(1, ramGb - 2)), 1, 64);
+        return lowMemory ? Math.Max(1, jobs / 2) : jobs;
     }
 
     // ---- 6. Finish -------------------------------------------------------------------
@@ -333,6 +340,14 @@ public sealed partial class BuildPipeline(GameSource source, ToolchainStatus too
                                       || line.StartsWith("FAILED:", StringComparison.Ordinal)
                                       || line.StartsWith("CMake Error", StringComparison.Ordinal)))
                 _errors.Add(line.Trim());
+            // Ninja reports a crashed step as "FAILED: [code=<NTSTATUS>] <outputs>". The recompiler
+            // prints nothing when it runs out of memory: it ends in a fail-fast (0xC0000409).
+            var failed = NinjaFailed().Match(line);
+            if (failed.Success && uint.TryParse(failed.Groups[1].Value, out uint status) && IsCrash(status))
+            {
+                if (failed.Groups[2].Value.Contains("codegen.build.stamp", StringComparison.Ordinal)) _recompilerCrashed = true;
+                else _outOfMemory = true;
+            }
             if (line.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
                 || line.Contains("bad_alloc", StringComparison.Ordinal)
                 || line.Contains("not enough space", StringComparison.OrdinalIgnoreCase)
@@ -342,7 +357,10 @@ public sealed partial class BuildPipeline(GameSource source, ToolchainStatus too
         }, cancel);
         if (code == 0) return;
         Log($"Exit code {code}");
-        if (_outOfMemory || code == unchecked((int)0xC0000017) || code == unchecked((int)0xC00000FD))
+        if (_recompilerCrashed)
+            throw new BuildException("The recompiler crashed, most likely because your PC ran out of memory.",
+                "It needs about 1.5 GB of free memory on its own. Close other programs, then click Try again.");
+        if (_outOfMemory || IsCrash(unchecked((uint)code)))
         {
             _outOfMemory = true;
             throw new BuildException(failure + " Your PC ran out of memory.",
@@ -352,6 +370,14 @@ public sealed partial class BuildPipeline(GameSource source, ToolchainStatus too
                             ?? _errors.FirstOrDefault() ?? $"exit code {code}";
         throw new BuildException(failure, Shorten(firstError, 300));
     }
+
+    [GeneratedRegex(@"^FAILED: \[code=(\d+)\] (.*)$")]
+    private static partial Regex NinjaFailed();
+
+    /// <summary>Exit statuses of a process that died rather than reported an error: out of
+    /// memory (0xC0000017), stack overflow (0xC00000FD), or a fail-fast such as abort() after
+    /// an unhandled std::bad_alloc (0xC0000409).</summary>
+    static bool IsCrash(uint status) => status is 0xC0000017 or 0xC00000FD or 0xC0000409;
 
     /// <summary>True when the copy of the game this build replaces is running. Other copies
     /// (a developer's build elsewhere, say) don't matter.</summary>

@@ -118,8 +118,8 @@ downloads `vs_buildtools.exe` from Microsoft, checks its Authenticode signature,
 elevated with `--passive`. Then, in `%LOCALAPPDATA%\nhl3on3\build`, it copies
 `buildkit/source`, points `nhl3on3_manifest.toml` at the unpacked game, and runs `cmake`
 (Ninja, Clang, `CMAKE_PREFIX_PATH=buildkit/sdk`), the `nhl3on3_codegen` target, a second
-configure to pick up the generated sources, and the build, at below-normal priority with about
-one job per 2 GB of RAM. It copies `nhl3on3.exe` and its DLLs next to itself, writes
+configure to pick up the generated sources, and the build, at below-normal priority with one
+job per GB of RAM beyond the first 2 GB (halved after an out-of-memory failure). It copies `nhl3on3.exe` and its DLLs next to itself, writes
 `nhl3on3.build.json`, and deletes the build folder. A cancelled or failed build keeps the
 folder and resumes on the next try. Everything is logged to `logs/build.log`.
 

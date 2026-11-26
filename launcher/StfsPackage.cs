@@ -34,6 +34,7 @@ public sealed class StfsPackage : IDisposable
         uint headerSize = BinaryPrimitives.ReadUInt32BigEndian(head.AsSpan(0x340));
         TitleId = BinaryPrimitives.ReadUInt32BigEndian(head.AsSpan(0x360));
         DisplayName = Encoding.BigEndianUnicode.GetString(head, 0x411, 0x80).Split('\0')[0];
+        Thumbnail = ReadImage(head, 0x1712, 0x171A) ?? ReadImage(head, 0x1716, 0x571A);
 
         var vd = head.AsSpan(0x379, 0x24);
         bool readOnly = (vd[2] & 1) != 0;
