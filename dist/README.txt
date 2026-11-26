@@ -2,17 +2,35 @@
 ===========================
 
 This is a native PC port of 3 on 3 NHL Arcade (Xbox 360, XBLA). It contains no game
-code or data: you need your own copy of the game's Xbox Live Arcade package.
+code or data: you need your own copy of the game's Xbox Live Arcade package. The
+launcher builds the PC version from your copy, on your PC. Nothing is uploaded.
 
 Setup
 -----
-1. Unzip this folder anywhere.
-2. Put your XBLA package next to it. That is the file inside
-   58410975\000D0000\ (its name is a long string of letters and digits).
-   You can copy the whole "58410975" folder in, or pick the file with Browse.
-3. Run "NHL 3on3 Launcher.exe" and click "Set up game". It checks the package is
-   3 on 3 NHL Arcade and unpacks it into a "game" folder.
-4. Click Play. Afterwards you can also start nhl3on3.exe directly.
+1. Unzip this folder somewhere you can write to (not Program Files), such as
+   Documents or another drive.
+2. Run "NHL 3on3 Launcher.exe".
+3. Drop your game onto the launcher window, or use "Browse for file" /
+   "Choose folder". Any of these works:
+     - the whole "58410975" folder,
+     - the package file inside 58410975\000D0000\ (its name is a long string of
+       letters and digits),
+     - an already unpacked copy (a folder with default.xex in it).
+   A package next to the launcher is found on its own.
+4. Click "Build game". The launcher checks your copy, unpacks it into a "game"
+   folder, recompiles it and builds nhl3on3.exe. This takes about 5-30 minutes,
+   once, and you can keep using your PC meanwhile.
+   The game is compiled with Microsoft's free C++ Build Tools. If they aren't
+   installed, the launcher installs them first: Windows asks for permission and
+   Microsoft's installer shows its progress (a few GB to download, about 10 GB on
+   disk). The build also needs about 4 GB free on your system drive while it runs.
+5. Click Play. Afterwards you can also start nhl3on3.exe directly.
+
+If the build stops, the launcher shows why. "Try again" picks up where it
+stopped; the full log is logs\build.log.
+
+Keep the "buildkit" folder: the launcher needs it to rebuild the game, for
+example after you update to a new release.
 
 Controls
 --------

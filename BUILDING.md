@@ -9,7 +9,7 @@ Windows 10/11 x64. The build needs your own copy of the game: the recompiler rea
   individual components **C++ Clang Compiler for Windows** (Clang 20+) and
   **MSBuild support for LLVM (clang-cl) toolset**. CMake 3.25+ and Ninja come with Visual Studio.
 - Git.
-- .NET 8 SDK (for the launcher only).
+- .NET 8 SDK or newer (for the launcher only).
 - Your 3 on 3 NHL Arcade XBLA package (title ID `58410975`).
 
 Run all build commands from an **x64 Native Tools / Developer PowerShell** for Visual Studio,
@@ -66,7 +66,8 @@ What's in this repository:
 | `nhl3on3_functions.toml` | Functions the recompiler's analysis misses (C++ thunks, leaf getters reached only through vtables or callbacks) |
 | `nhl3on3.toml` | Runtime settings, copied next to the executable |
 | `src/` | The app class and kernel exports the runtime lacks or only stubs |
-| `launcher/` | The launcher (C#, .NET 8) |
+| `launcher/` | The launcher (C#, WPF, .NET 8): builds the game from the player's copy |
+| `tools/` | `make_release.ps1` (assembles a release with the build kit), `make_icon.ps1` |
 | `android/` | The Android (arm64) app: a Gradle/SDL3 project that builds the game into an APK |
 | `patches/rexglue/` | Fixes the port needs in ReXGlue |
 | `dist/` | Player README and license texts shipped with releases |
@@ -76,20 +77,55 @@ The recompiler's generated C++ (`generated/default/`) is built locally and never
 
 ## 4. Build the launcher
 
+The launcher (`launcher/`, WPF on .NET 8) takes the player's copy of the game and does steps
+2 and 3 on their PC: it verifies the package (title ID and `default.xex` hash), unpacks it,
+finds or installs Microsoft's C++ Build Tools, runs the recompiler and compiles the game.
+
 ```
 dotnet publish launcher -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out/launcher
 ```
 
 ## 5. Assemble a release
 
-One folder containing:
+Releases ship no game code and no prebuilt game. They ship the launcher plus a **build kit**:
+this repository's sources and the installed, patched ReXGlue SDK (Release files only). The
+launcher compiles `nhl3on3.exe` from the player's own copy.
 
-- from `out/build/win-amd64-release/`: `nhl3on3.exe`, `rexruntime.dll`, `rexgpu-xenos.dll`, `nhl3on3.toml`
-- from `out/launcher/`: `NHL 3on3 Launcher.exe`
-- `dist/README.txt`
-- `dist/licenses/` as `licenses/`, plus this repository's `LICENSE` as `licenses/nhl3on3.txt`
+```
+pwsh tools/make_release.ps1 -SdkDir <rexglue-sdk>/out/install/win-amd64 -Zip
+```
 
-Never include anything from `game/` or `generated/`.
+This publishes the launcher and writes `out/release/`:
+
+| Path | What |
+|---|---|
+| `NHL 3on3 Launcher.exe` | The launcher |
+| `buildkit/kit.json` | Kit version (the launcher's `<Version>`); when it changes, the launcher offers players a rebuild |
+| `buildkit/source/` | `CMakeLists.txt`, `src/`, `thirdparty/`, the `.toml` files, `generated/rexglue.cmake` |
+| `buildkit/sdk/` | The ReXGlue SDK install from step 1, without Debug/RelWithDebInfo files or unused headers |
+| `README.txt`, `licenses/` | From `dist/`, plus this repository's `LICENSE` as `licenses/nhl3on3.txt` |
+
+The script stops if anything from the game (`.xex`, `.big`, ...), `generated/default/` or an
+`nhl3on3.exe` ends up in the folder. Build the SDK with every patch in `patches/rexglue`
+applied: the kit ships it as is.
+
+Bump `<Version>` in `launcher/Nhl3on3Launcher.csproj` for each release so existing players get
+the rebuild prompt. `tools/make_icon.ps1` regenerates `launcher/launcher.ico`.
+
+**How the launcher builds.** It finds Visual Studio 2026 or its Build Tools with `vswhere`, and
+needs the MSVC x64 tools, Clang 20+, the CMake tools and a Windows SDK. If they're missing it
+downloads `vs_buildtools.exe` from Microsoft, checks its Authenticode signature, and runs it
+elevated with `--passive`. Then, in `%LOCALAPPDATA%\nhl3on3\build`, it copies
+`buildkit/source`, points `nhl3on3_manifest.toml` at the unpacked game, and runs `cmake`
+(Ninja, Clang, `CMAKE_PREFIX_PATH=buildkit/sdk`), the `nhl3on3_codegen` target, a second
+configure to pick up the generated sources, and the build, at below-normal priority with about
+one job per 2 GB of RAM. It copies `nhl3on3.exe` and its DLLs next to itself, writes
+`nhl3on3.build.json`, and deletes the build folder. A cancelled or failed build keeps the
+folder and resumes on the next try. Everything is logged to `logs/build.log`.
+
+To try the launcher against a kit somewhere else, set `NHL3ON3_BUILDKIT` to that `buildkit`
+folder. A path given on the command line (or dropped on the launcher's icon) is picked as the
+game copy.
 
 `rexruntime.dll` contains FFmpeg and libmspack under the LGPL 2.1; see
 [THIRD_PARTY.md](THIRD_PARTY.md) for how to rebuild it with modified versions.

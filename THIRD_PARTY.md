@@ -24,6 +24,16 @@ Patch `0004` in [`patches/rexglue`](patches/rexglue/README.md) ports the `resolv
 shader from [Xenia Canary](https://github.com/xenia-canary/xenia-canary) (BSD 3-Clause, the
 same license as the Xenia-derived code in ReXGlue, whose notice is in `ReXGlue.txt`).
 
+Releases built with the launcher also contain a build kit (`buildkit/`) that the launcher
+compiles the game from on the player's PC. `buildkit/sdk` is the ReXGlue SDK install: the DLLs
+above, their import and static libraries (built from the projects above), and headers of
+ReXGlue, SDL 3, Dear ImGui, spdlog, fmt, SIMDe, toml++, UTF8-CPP and xxHash. It also contains
+`TracyClient.dll` from [Tracy](https://github.com/wolfpld/tracy) (BSD 3-Clause, `Tracy.txt`),
+which the SDK's CMake package expects but the game does not load. `buildkit/source` is this
+repository's source, including `thirdparty/stb_image.h`. The game itself is compiled on the
+player's PC with Microsoft's C++ Build Tools, which the launcher installs from Microsoft, under
+Microsoft's license terms, if they are missing.
+
 The launcher is a .NET 8 application. The self-contained build includes Microsoft's .NET runtime,
 redistributed under the Microsoft .NET Library License (`dotnet-LICENSE.txt`), with its
 third-party notices in `dotnet-ThirdPartyNotices.txt`.

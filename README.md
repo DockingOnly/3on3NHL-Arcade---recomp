@@ -42,7 +42,7 @@ Legend: ✅ done · 🚧 work in progress
 | Menus, intro movies and full matches | 🚧 |
 | Xbox and PlayStation controllers | 🚧 |
 | Achievements (**Achievements** menu item or **F7**, saved between sessions) | 🚧 |
-| Launcher that sets the game up from your package | 🚧 |
+| Launcher that builds the game from your own copy | 🚧 |
 | Higher internal resolution | 🚧 |
 | Android (arm64) build | 🚧 |
 
@@ -80,6 +80,24 @@ This fork has **no releases yet**. The upstream project publishes Windows builds
 3. Open `NHL 3on3 Launcher.exe`, click **Set up game**, then **Play**. The launcher checks
    that the package really is 3 on 3 NHL Arcade and unpacks it into a `game` folder.
 
+### Coming with this fork's releases: the launcher builds the game for you
+
+This fork's releases will ship the launcher and a build kit (the port's source and the patched
+ReXGlue SDK) instead of a prebuilt game. You point the launcher at your own copy and it does
+the rest on your PC:
+
+1. Unzip the release somewhere you can write to and open `NHL 3on3 Launcher.exe`.
+2. Drop your game onto it: the `58410975` folder, the package file inside
+   `58410975\000D0000\`, or an already unpacked copy.
+3. Click **Build game**. The launcher verifies your copy, unpacks it, installs Microsoft's free
+   C++ Build Tools if they're missing (Windows asks for permission), recompiles the game and
+   builds `nhl3on3.exe`. This takes about 5–30 minutes, once.
+4. Click **Play**.
+
+If a build stops, the launcher shows why; **Try again** picks up where it stopped, and the
+full log is `logs\build.log`. [BUILDING.md](BUILDING.md#5-assemble-a-release) explains how a
+release is put together.
+
 ### Option B: build this fork
 
 [BUILDING.md](BUILDING.md) covers the Windows and Android builds. In short, you need:
@@ -97,7 +115,7 @@ This fork has **no releases yet**. The upstream project publishes Windows builds
 | CPU | x86-64 with SSE4.2; AVX is not required |
 | GPU | Any card with Direct3D 12 |
 | RAM | 4 GB |
-| Storage | About 350 MB with the game unpacked |
+| Storage | About 350 MB with the game unpacked; building it yourself (Option B or the launcher) also needs Microsoft's C++ Build Tools, about 10 GB, and 4 GB free while building |
 
 Raising the internal resolution takes much more GPU power than 1x. See
 [Known issues](#known-issues).

@@ -19,9 +19,13 @@ public sealed class StfsPackage : IDisposable
     readonly int _tableBlocks;
     readonly int _tableStart;
 
+    const int HeadSize = 0x971A;  // through the end of the title thumbnail
+
     public string Magic { get; }
     public uint TitleId { get; }
     public string DisplayName { get; }
+    /// <summary>The package's PNG thumbnail, or null.</summary>
+    public byte[]? Thumbnail { get; }
 
     StfsPackage(FileStream stream, byte[] head)
     {
@@ -48,8 +52,8 @@ public sealed class StfsPackage : IDisposable
         try
         {
             stream = File.OpenRead(path);
-            if (stream.Length < BlockSize) { stream.Dispose(); return null; }
-            var head = new byte[BlockSize];
+            if (stream.Length < HeadSize) { stream.Dispose(); return null; }
+            var head = new byte[HeadSize];
             stream.ReadExactly(head);
             string magic = Encoding.ASCII.GetString(head, 0, 4);
             if (magic is not ("LIVE" or "PIRS" or "CON ")) { stream.Dispose(); return null; }
@@ -57,6 +61,13 @@ public sealed class StfsPackage : IDisposable
         }
         catch (IOException) { stream?.Dispose(); return null; }
         catch (UnauthorizedAccessException) { stream?.Dispose(); return null; }
+    }
+
+    static byte[]? ReadImage(byte[] head, int sizeOffset, int dataOffset)
+    {
+        uint size = BinaryPrimitives.ReadUInt32BigEndian(head.AsSpan(sizeOffset));
+        if (size == 0 || size > 0x4000) return null;
+        return head.AsSpan(dataOffset, (int)size).ToArray();
     }
 
     static int U24Le(ReadOnlySpan<byte> b) => b[0] | (b[1] << 8) | (b[2] << 16);
@@ -148,6 +159,23 @@ public sealed class StfsPackage : IDisposable
         }
 
         return raw.Select((r, i) => new Entry(PathOf(i), r.Dir, r.Contig, r.Blocks, r.Start, r.Size)).ToList();
+    }
+
+    /// <summary>Reads one file of the package into memory.</summary>
+    public byte[] ReadFile(Entry entry)
+    {
+        var data = new byte[entry.Size];
+        var block = new byte[BlockSize];
+        int done = 0;
+        foreach (int index in Chain(entry.StartBlock, entry.Blocks, entry.Contiguous))
+        {
+            if (done >= data.Length) break;
+            ReadBlock(index, block);
+            int n = Math.Min(data.Length - done, BlockSize);
+            block.AsSpan(0, n).CopyTo(data.AsSpan(done));
+            done += n;
+        }
+        return data;
     }
 
     /// <summary>Extracts every file into outDir, reporting (bytesDone, bytesTotal).</summary>
