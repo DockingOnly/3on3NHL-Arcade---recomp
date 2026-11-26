@@ -19,8 +19,9 @@ readback_resolve = "full"
 execute_unclipped_draw_vs_on_cpu = true
 
 # --- Online play (ported from 3on3ArcadeRecomp) ---
-# Emulate a signed-in Xbox LIVE profile and the XNet stack.
-online = true
+# Emulate a signed-in Xbox LIVE profile and the XNet stack. Off in releases until this
+# port has its own online play; while off, the game contacts no server.
+online = false
 # Shown to other players (up to 15 chars); empty = use the profile name. Each
 # instance needs its own, so override per instance with --online_gamertag=NAME.
 online_gamertag = ""
