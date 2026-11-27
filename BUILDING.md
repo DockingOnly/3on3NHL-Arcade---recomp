@@ -24,6 +24,8 @@ cd rexglue-sdk
 git apply <this-repo>/patches/rexglue/0001-input-system-lock.patch
 git apply <this-repo>/patches/rexglue/0002-codegen-vpk-unsigned-alias.patch
 git apply <this-repo>/patches/rexglue/0003-android-support.patch
+git apply <this-repo>/patches/rexglue/0004-scaled-resolve-downscale-layout.patch
+git apply <this-repo>/patches/rexglue/0005-wait-reg-mem-spin-before-sleep.patch
 cmake --preset win-amd64
 cmake --build out/build/win-amd64 --target install
 ```

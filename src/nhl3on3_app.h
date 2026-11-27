@@ -13,6 +13,7 @@
 #include <rex/ui/ui_event.h>
 
 #include "kernel_stubs.h"
+#include "nhl3on3_frame_rate.h"
 
 class Nhl3on3App : public rex::ReXApp {
  public:
@@ -54,6 +55,7 @@ class Nhl3on3App : public rex::ReXApp {
   // The game's Achievements menu item opens the achievements overlay, the same as its hotkey
   // (bind_achievements, F7 by default).
   void OnPostSetup() override {
+    SetGuestFrameStats(nhl3on3::GuestFrameStats);
     nhl3on3::SetAchievementsOpener([this] {
       app_context().CallInUIThreadDeferred([] {
         rex::ui::KeyEvent press(nullptr,

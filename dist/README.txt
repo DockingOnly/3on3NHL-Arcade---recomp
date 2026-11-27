@@ -5,6 +5,9 @@ This is a native PC port of 3 on 3 NHL Arcade (Xbox 360, XBLA). It contains no g
 code or data: you need your own copy of the game's Xbox Live Arcade package. The
 launcher builds the PC version from your copy, on your PC. Nothing is uploaded.
 
+This is a pre-alpha test build. Expect bugs; when you report one, include the
+version shown in the launcher and the files in the logs folder.
+
 Setup
 -----
 1. Unzip this folder somewhere you can write to (not Program Files), such as
@@ -46,10 +49,17 @@ Settings
 --------
 nhl3on3.toml holds the settings the game needs; command-line flags override it.
 
+Internal resolution: add "resolution_scale = 2" to nhl3on3.toml (or start the game
+with --resolution_scale=2) to render at 2560x1440 instead of 1280x720. 2 holds
+60 fps on a recent graphics card; 3 is close but can dip below 60 in matches.
+Press F3 in-game to show the frame rate.
+
 Known issues
 ------------
 - Online play (Xbox Live menu) is not available.
-- Higher internal resolution (--draw_resolution_scale_x/y) breaks text and some textures.
+- In some matches the scoreboard clock and score stay blank for the whole match.
+- The game can occasionally freeze on the loading screen before a match. Close it
+  and start it again; please report it with the logs folder if it happens.
 
 Licenses are in the licenses folder.
 

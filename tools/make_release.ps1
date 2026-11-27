@@ -34,6 +34,10 @@ $SdkDir = (Resolve-Path $SdkDir).Path
 if (-not (Test-Path (Join-Path $SdkDir 'lib\cmake\rexglue\rexglueConfig.cmake'))) {
     throw "$SdkDir is not an installed ReXGlue SDK (lib\cmake\rexglue\rexglueConfig.cmake is missing)."
 }
+# A release must match a commit: the kit copies the working tree, not HEAD.
+$dirty = git -C $repo status --porcelain --untracked-files=no -- CMakeLists.txt src thirdparty `
+    nhl3on3.toml nhl3on3_functions.toml nhl3on3_manifest.toml launcher dist generated/rexglue.cmake
+if ($dirty) { throw "Uncommitted changes in files the release ships; commit them first:`n$($dirty -join "`n")" }
 if (-not $Version) {
     $Version = ([xml](Get-Content (Join-Path $repo 'launcher\Nhl3on3Launcher.csproj'))).Project.PropertyGroup.Version | Select-Object -First 1
 }
@@ -97,7 +101,9 @@ foreach ($name in 'dxc', 'renderdoc', 'disruptorplus', 'tracy') {
     Set-Content (Join-Path $dir 'README.txt') "Left empty on purpose: the game's build includes no headers from here."
 }
 
-@{ version = $Version } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $kit 'kit.json')
+# The commit lets a tester's report be traced back to the exact sources.
+$commit = (git -C $repo rev-parse --short HEAD).Trim()
+@{ version = $Version; commit = $commit } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $kit 'kit.json')
 
 # --- player files --------------------------------------------------------------------
 Copy-Item (Join-Path $repo 'dist\README.txt') $OutDir

@@ -501,7 +501,9 @@ const NetState& State() {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
     NetState s;
-    if (uint32_t server = ResolveIpv4(REXCVAR_GET(online_server))) {
+    // Offline, the address is never used; don't look the server up at all.
+    if (!Online()) {
+    } else if (uint32_t server = ResolveIpv4(REXCVAR_GET(online_server))) {
       s.server_ip = server;
     } else {
       REXLOG_ERROR("[net] could not resolve online_server '{}'", REXCVAR_GET(online_server));
