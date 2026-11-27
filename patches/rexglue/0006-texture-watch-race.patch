@@ -1,0 +1,120 @@
+From: 3on3NHL-recomp
+Subject: [PATCH] Don't mark a texture up to date if the CPU wrote to it during its load
+
+Loading a texture takes three steps that don't hold the global lock throughout:
+read whether it is outdated, upload its pages to shared memory (which
+write-protects them), then untile it and only then start watching its range.
+A CPU write between the upload and the watch faults, invalidates the pages and
+unprotects them, but the texture has no watch yet so it is not told; it is then
+marked up to date with the old data. With the pages unprotected, later writes
+don't fault either, so the texture keeps the old data until something else
+evicts it.
+
+The game builds glyphs into a font texture with the CPU as text first needs
+them, so this left some glyphs blank for a whole match (the scoreboard clock
+and score, letters of "ADVANCE"), in about two of three matches.
+
+Before marking a texture up to date, check under the lock that its pages are
+still valid; if not, leave it outdated so it is reloaded on its next use.
+
+diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
+index 4d85a2b5..b994d015 100644
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -79,6 +79,10 @@ class SharedMemory {
+   bool RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count);
+   bool RequestRange(uint32_t start, uint32_t length);
+ 
++  // Whether every page of the range is still valid, i.e. uploaded and not modified by the CPU
++  // since. Call with the global critical region locked.
++  bool IsRangeValid(uint32_t start, uint32_t length) const;
++
+   // Marks the range and, if not exact_range, potentially its surroundings
+   // (to up to the first GPU-written page, as an access violation exception
+   // count optimization) as modified by the CPU, also invalidating GPU-written
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600c..4f44aa27 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -689,19 +689,35 @@ TextureCache::Texture::~Texture() {
+ void TextureCache::Texture::MakeUpToDateAndWatch(
+     const std::unique_lock<std::recursive_mutex>& global_lock) {
+   SharedMemory& shared_memory = texture_cache().shared_memory();
++  // The data was uploaded to shared memory before this without the lock held throughout, and the
++  // watch only starts here. A CPU write in between invalidated the pages (and unprotected them, so
++  // later writes don't fault either) without notifying this texture, and it would keep the old
++  // data for good. If that happened, stay outdated so the texture is reloaded on its next use.
++  bool reload = false;
+   if (base_outdated_) {
+     assert_not_zero(GetGuestBaseSize());
+-    base_outdated_ = false;
+-    base_watch_handle_ = shared_memory.WatchMemoryRange(
+-        key().base_page << 12, GetGuestBaseSize(), TextureCache::WatchCallback, this, nullptr, 0);
+-    outdated_mask_.fetch_and(~kOutdatedBitBase, std::memory_order_release);
++    if (shared_memory.IsRangeValid(key().base_page << 12, GetGuestBaseSize())) {
++      base_outdated_ = false;
++      base_watch_handle_ = shared_memory.WatchMemoryRange(
++          key().base_page << 12, GetGuestBaseSize(), TextureCache::WatchCallback, this, nullptr, 0);
++      outdated_mask_.fetch_and(~kOutdatedBitBase, std::memory_order_release);
++    } else {
++      reload = true;
++    }
+   }
+   if (mips_outdated_) {
+     assert_not_zero(GetGuestMipsSize());
+-    mips_outdated_ = false;
+-    mips_watch_handle_ = shared_memory.WatchMemoryRange(
+-        key().mip_page << 12, GetGuestMipsSize(), TextureCache::WatchCallback, this, nullptr, 1);
+-    outdated_mask_.fetch_and(~kOutdatedBitMips, std::memory_order_release);
++    if (shared_memory.IsRangeValid(key().mip_page << 12, GetGuestMipsSize())) {
++      mips_outdated_ = false;
++      mips_watch_handle_ = shared_memory.WatchMemoryRange(
++          key().mip_page << 12, GetGuestMipsSize(), TextureCache::WatchCallback, this, nullptr, 1);
++      outdated_mask_.fetch_and(~kOutdatedBitMips, std::memory_order_release);
++    } else {
++      reload = true;
++    }
++  }
++  if (reload) {
++    texture_cache().texture_became_outdated_.store(true, std::memory_order_release);
+   }
+ }
+ 
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c8..0ff3b688 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -468,6 +468,33 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   return UploadRanges(upload_ranges_);
+ }
+ 
++bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
++  if (!length) {
++    return true;
++  }
++  if (start >= kBufferSize) {
++    return false;
++  }
++  length = std::min(length, kBufferSize - start);
++  uint32_t page_first = start >> page_size_log2_;
++  uint32_t page_last = (start + length - 1) >> page_size_log2_;
++  uint32_t block_first = page_first >> 6;
++  uint32_t block_last = page_last >> 6;
++  for (uint32_t i = block_first; i <= block_last; ++i) {
++    uint64_t pages = UINT64_MAX;
++    if (i == block_first) {
++      pages &= ~((uint64_t(1) << (page_first & 63)) - 1);
++    }
++    if (i == block_last && (page_last & 63) != 63) {
++      pages &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
++    }
++    if ((system_page_flags_valid_[i] & pages) != pages) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+   std::pair<uint32_t, uint32_t> range(start, length);
+   return RequestRanges(&range, 1);
