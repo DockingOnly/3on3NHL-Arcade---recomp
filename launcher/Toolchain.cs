@@ -104,7 +104,7 @@ static class ToolchainLocator
         };
     }
 
-    static (Toolchain?, List<string>) Inspect(VsInstance inst, bool windowsSdk)
+    internal static (Toolchain?, List<string>) Inspect(VsInstance inst, bool windowsSdk)
     {
         var missing = new List<string>();
         string vc = Path.Combine(inst.Path, "VC");
@@ -163,7 +163,7 @@ static class ToolchainLocator
         return list;
     }
 
-    static bool HasWindowsSdk()
+    internal static bool HasWindowsSdk()
     {
         foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
         {
@@ -258,7 +258,7 @@ static class ToolchainLocator
         }
     }
 
-    static bool IsSignedByMicrosoft(string file)
+    internal static bool IsSignedByMicrosoft(string file)
     {
         if (!AuthenticodeValid(file)) return false;
         try
