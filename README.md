@@ -159,6 +159,9 @@ Current rosters built into the game rather than installed as a mod:
   added. The game's team table has room for them.
 - 🚧 **Portraits** from openly licensed photos (credited), with a neutral silhouette for anyone
   without one. Your own photos can be dropped in to replace any of them.
+- 🚧 **Secret players:** hidden players unlocked with a controller code, an achievement or a
+  number of wins, who then take a chosen player's slot (applies on restart; can be turned off
+  in the menu).
 
 ### Carried over from upstream
 
