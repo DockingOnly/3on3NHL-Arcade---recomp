@@ -1,0 +1,177 @@
+From: 3on3NHL-recomp
+Subject: [PATCH] D3D12: paint and present on a queue of their own
+
+The presenter submitted its painting and created its swap chain on the same
+direct queue as the command processor, and presents at the host refresh rate.
+When the driver limits the frame rate (Max Frame Rate, or the automatic cap of
+G-SYNC with V-Sync and Low Latency Mode Ultra / Reflex) or forces V-Sync,
+IDXGISwapChain::Present blocks inside the driver for up to a refresh while
+holding that queue's lock, so nearly every ExecuteCommandLists of the command
+processor waited several milliseconds. With a game that synchronizes with the
+GPU many times a frame, that cut the frame rate from 60 to 12.
+
+Use a separate direct queue for the swap chain, painting and UI drawing
+(d3d12_present_queue, on by default). The guest output images are handed over
+with GPU-side waits: painting waits for the refresher submission that wrote the
+image, and refreshing an image waits for the last paint submission that read it.
+
+diff --git a/include/rex/ui/d3d12/d3d12_presenter.h b/include/rex/ui/d3d12/d3d12_presenter.h
+index 83d09f7b..fc877a13 100644
+--- a/include/rex/ui/d3d12/d3d12_presenter.h
++++ b/include/rex/ui/d3d12/d3d12_presenter.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <atomic>
+ #include <memory>
+ #include <utility>
+ 
+@@ -302,6 +303,17 @@ class D3D12Presenter final : public Presenter {
+   // guest_output_resources_).
+   D3D12SubmissionTracker guest_output_resource_refresher_submission_tracker_;
+ 
++  // Painting and presentation use their own queue (d3d12_present_queue), so that a present that
++  // blocks in the driver (a frame rate limit, V-Sync forced on) doesn't hold the lock of the queue
++  // the emulated GPU submits to. The guest output is handed over with GPU-side waits: painting
++  // waits for the refresher submission that wrote the image, and refreshing an image waits for
++  // the last paint submission that read it (stored per mailbox index).
++  Microsoft::WRL::ComPtr<ID3D12CommandQueue> present_queue_;
++  std::array<std::atomic<UINT64>, kGuestOutputMailboxSize> guest_output_last_paint_submission_ = {};
++  ID3D12CommandQueue* GetPresentQueue() const {
++    return present_queue_ ? present_queue_.Get() : provider_.GetDirectQueue();
++  }
++
+   // UI submission tracker with the submission index that can be given to UI
+   // drawers (accessible from the UI thread only, at any time).
+   D3D12SubmissionTracker ui_submission_tracker_;
+diff --git a/include/rex/ui/d3d12/d3d12_submission_tracker.h b/include/rex/ui/d3d12/d3d12_submission_tracker.h
+index 2ca17043..2991868f 100644
+--- a/include/rex/ui/d3d12/d3d12_submission_tracker.h
++++ b/include/rex/ui/d3d12/d3d12_submission_tracker.h
+@@ -75,6 +75,9 @@ class D3D12SubmissionTracker {
+   // enqueued, can be used to retry enqueueing the signal.
+   bool TrySignalEnqueueing();
+ 
++  // For GPU-side waits on another queue (ID3D12CommandQueue::Wait).
++  ID3D12Fence* GetFence() const { return fence_.Get(); }
++
+  private:
+   UINT64 submission_current_ = 1;
+   UINT64 submission_signal_queued_ = 0;
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+index 306118ee..904d1ee4 100644
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -30,6 +30,9 @@
+ #include <ffx_api/ffx_upscale.h>
+ #endif
+ 
++REXCVAR_DEFINE_BOOL(d3d12_present_queue, true, "UI/D3D12",
++                    "Paint and present on a queue of their own, so a present that blocks in the "
++                    "driver (frame rate limit, forced V-Sync) does not stall emulated GPU work");
+ REXCVAR_DEFINE_BOOL(d3d12_allow_variable_refresh_rate_and_tearing, true, "UI/D3D12",
+                     "Allow variable refresh rate and tearing");
+ 
+@@ -414,7 +417,7 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
+       swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+     }
+     IDXGIFactory2* dxgi_factory = provider_.GetDXGIFactory();
+-    ID3D12CommandQueue* direct_queue = provider_.GetDirectQueue();
++    ID3D12CommandQueue* direct_queue = GetPresentQueue();
+     Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain_1;
+     switch (surface_type) {
+ #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP | WINAPI_PARTITION_GAMES)
+@@ -528,6 +531,15 @@ bool D3D12Presenter::RefreshGuestOutputImpl(
+       return false;
+     }
+   }
++  if (present_queue_) {
++    // memory_order_acquire: pairs with the release in painting, ordered before the mailbox handover.
++    UINT64 last_paint_submission =
++        guest_output_last_paint_submission_[mailbox_index].load(std::memory_order_acquire);
++    ID3D12Fence* paint_fence = paint_context_.paint_submission_tracker.GetFence();
++    if (last_paint_submission && paint_fence) {
++      provider_.GetDirectQueue()->Wait(paint_fence, last_paint_submission);
++    }
++  }
+   D3D12GuestOutputRefreshContext context(is_8bpc_out_ref, guest_output_resource_ref.second.Get());
+   bool refresher_succeeded = refresher(context);
+   // Even if the refresher has returned false, it still might have submitted
+@@ -588,12 +600,19 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+   GuestOutputProperties guest_output_properties;
+   GuestOutputPaintConfig guest_output_paint_config;
+   Microsoft::WRL::ComPtr<ID3D12Resource> guest_output_resource;
++  uint32_t painted_guest_output_mailbox_index = UINT32_MAX;
++  UINT64 painted_guest_output_refresher_submission = 0;
+   {
+     uint32_t guest_output_mailbox_index;
+     std::unique_lock<std::mutex> guest_output_consumer_lock(ConsumeGuestOutput(
+         guest_output_mailbox_index, &guest_output_properties, &guest_output_paint_config));
+     if (guest_output_mailbox_index != UINT32_MAX) {
+       guest_output_resource = guest_output_resources_[guest_output_mailbox_index].second;
++      if (guest_output_resource) {
++        painted_guest_output_mailbox_index = guest_output_mailbox_index;
++        painted_guest_output_refresher_submission =
++            guest_output_resources_[guest_output_mailbox_index].first;
++      }
+     }
+     // Incremented the reference count of the guest output resource - safe to
+     // leave the consumer critical section now as everything here either will be
+@@ -1142,11 +1161,22 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+   // Execute and present.
+   command_list->Close();
+   ID3D12CommandList* execute_command_list = command_list;
+-  provider_.GetDirectQueue()->ExecuteCommandLists(1, &execute_command_list);
++  if (present_queue_ && painted_guest_output_mailbox_index != UINT32_MAX) {
++    ID3D12Fence* refresher_fence = guest_output_resource_refresher_submission_tracker_.GetFence();
++    if (refresher_fence) {
++      present_queue_->Wait(refresher_fence, painted_guest_output_refresher_submission);
++    }
++  }
++  GetPresentQueue()->ExecuteCommandLists(1, &execute_command_list);
+   if (execute_ui_drawers) {
+     ui_submission_tracker_.NextSubmission();
+   }
+   paint_context_.paint_submission_tracker.NextSubmission();
++  if (painted_guest_output_mailbox_index != UINT32_MAX) {
++    // NextSubmission has enqueued the signal of current_paint_submission.
++    guest_output_last_paint_submission_[painted_guest_output_mailbox_index].store(
++        current_paint_submission, std::memory_order_release);
++  }
+   // Present as soon as possible, without waiting for vsync (the host refresh
+   // rate may be something like 144 Hz, which is not a multiple of the common
+   // 30 Hz or 60 Hz guest refresh rate), and allowing dropping outdated queued
+@@ -1443,9 +1473,21 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+ 
+   ID3D12CommandQueue* direct_queue = provider_.GetDirectQueue();
+ 
++  if (REXCVAR_GET(d3d12_present_queue)) {
++    D3D12_COMMAND_QUEUE_DESC present_queue_desc = {};
++    present_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
++    present_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
++    present_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
++    if (FAILED(device->CreateCommandQueue(&present_queue_desc, IID_PPV_ARGS(&present_queue_)))) {
++      REXLOG_WARN("D3D12Presenter: Failed to create the present queue, presenting on the main one");
++      present_queue_.Reset();
++    }
++  }
++  ID3D12CommandQueue* present_queue = GetPresentQueue();
++
+   // Paint submission trackers.
+-  if (!paint_context_.paint_submission_tracker.Initialize(device, direct_queue) ||
+-      !paint_context_.present_submission_tracker.Initialize(device, direct_queue)) {
++  if (!paint_context_.paint_submission_tracker.Initialize(device, present_queue) ||
++      !paint_context_.present_submission_tracker.Initialize(device, present_queue)) {
+     return false;
+   }
+ 
+@@ -1505,7 +1547,7 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+     return false;
+   }
+ 
+-  if (!ui_submission_tracker_.Initialize(device, direct_queue)) {
++  if (!ui_submission_tracker_.Initialize(device, present_queue)) {
+     return false;
+   }
+ 
