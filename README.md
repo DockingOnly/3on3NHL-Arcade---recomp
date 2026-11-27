@@ -137,20 +137,42 @@ These come first, in roughly this order:
 3. 🚧 **Above 60 fps.** The game's logic runs at a fixed 60 steps a second, so uncapping the
    frame rate just speeds the game up. Going above 60 needs interpolated frames or decoupling
    rendering from the logic.
-4. 🚧 **Resolution options** you can change without editing config files.
+4. 🚧 **Video options in the game's own menu.** Fullscreen, VSync, resolution scale, texture
+   filtering and upscaling as new rows under **Help & Options › Visual**, so they work the same
+   on PC and Android and with a controller. Options that need a restart are marked as such, and
+   if a new setting stops the game from reaching the main menu, the next start puts the old
+   values back. `nhl3on3.toml` and command-line flags still override everything.
 5. 🚧 **DLSS** (and possibly other upscalers) on supported GPUs.
 6. 🚧 **Controller-aware button prompts** that show Xbox or PlayStation buttons to match the
    connected pad.
 
+### 2026-27 edition (planned)
+
+Current rosters built into the game rather than installed as a mod:
+
+- 🚧 **2026-27 rosters by default.** Names, numbers, teams, handedness, player types and
+  portraits for the 43 arcade-star slots, shipped as a `roster.json` with each release and
+  applied to your own copy of the game the first time it starts.
+- 🚧 **Classic 2008-09 rosters** as an option in the game's menu (applies on restart). The
+  original files are kept, so switching back is always possible.
+- 🚧 **Current teams:** Winnipeg and Utah in place of Atlanta and Phoenix, and Seattle and Vegas
+  added. The game's team table has room for them.
+- 🚧 **Portraits** from openly licensed photos (credited), with a neutral silhouette for anyone
+  without one. Your own photos can be dropped in to replace any of them.
+
 ### Carried over from upstream
 
+- 🚧 **Menu patching and saved options:** port upstream's front-end patcher, which the roster
+  loader needs before it can run and which new menu rows are built on, and its saving of
+  in-game options to `nhl3on3.toml` (the game itself forgets them at exit).
 - 🚧 **Online play:** bring back the game's online mode through a community server and make
   the two online achievements (*Let's Play* and *Team Player*) earnable.
-- 🚧 **Mods:** current rosters (names, numbers, ratings, player types and portraits), new team
+- 🚧 **Mods:** custom rosters (the same `roster.json` format as the 2026-27 edition), new team
   logos and artwork, more than the original 43 selectable players, and new uses for the
   Xbox Live menu. Mods would only contain changes applied to your own copy, never EA's files.
-- 🚧 **Launcher:** mod install and selection, a settings page, an achievements page that works
-  without starting the game, and update checks.
+- 🚧 **Launcher:** mod install and selection, an achievements page that works without starting
+  the game, update checks, and a **Reset video settings** button. Other settings move into the
+  game's own menu (see milestone 4).
 - 🚧 **Android:** a first-run importer for the XBLA package to replace the current `adb push`
   steps.
 
