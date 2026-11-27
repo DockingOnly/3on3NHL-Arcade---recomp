@@ -1,0 +1,82 @@
+From: 3on3NHL-recomp
+Subject: [PATCH] Sleep in sub-millisecond steps in WAIT_REG_MEM
+
+After spinning for wait_reg_mem_spin_us, WAIT_REG_MEM slept for the interval
+the packet asks for, at least 1 ms, rounded up to the system timer period. The
+game hands each frame over with WAIT_REG_MEM waits for the CPU, so waking a
+millisecond or more after the CPU released the command processor started the
+next frame late - at 3x resolution that was enough to miss a vertical blank
+every few seconds.
+
+Sleep for wait_reg_mem_sleep_us (250) instead, with a high-resolution waitable
+timer on Windows.
+
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 9261ccf9..cea909de 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -35,9 +35,27 @@
+ #include <rex/stream.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/user_module.h>
++#include <rex/platform.h>
++
++#if REX_PLATFORM_WIN32
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++#endif
+ 
+ REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
+ 
++REXCVAR_DEFINE_UINT32(wait_reg_mem_sleep_us, 250, "GPU",
++                      "After wait_reg_mem_spin_us, how long a WAIT_REG_MEM packet sleeps between "
++                      "polls, in microseconds (sub-millisecond where the host supports it). Waking "
++                      "late delays the frame handshakes with the guest CPU.");
+ REXCVAR_DEFINE_UINT32(wait_reg_mem_spin_us, 2000, "GPU",
+                       "How long a WAIT_REG_MEM packet keeps polling (yielding between polls) "
+                       "before it starts sleeping, in microseconds. Sleeps are at least ~1 ms, "
+@@ -88,6 +106,26 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
+ 
+ namespace rex::graphics {
+ 
++namespace {
++// Sleeps for about the duration, with sub-millisecond precision where the host supports it - a
++// plain Sleep rounds up to the system timer period, a millisecond or more.
++void PreciseSleep(std::chrono::microseconds duration) {
++#if REX_PLATFORM_WIN32
++  thread_local HANDLE timer = CreateWaitableTimerExW(
++      nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++  if (timer) {
++    LARGE_INTEGER due_time;
++    due_time.QuadPart = -int64_t(duration.count()) * 10;
++    if (SetWaitableTimerEx(timer, &due_time, 0, nullptr, nullptr, nullptr, 0)) {
++      WaitForSingleObject(timer, INFINITE);
++      return;
++    }
++  }
++#endif
++  rex::thread::Sleep(duration);
++}
++}  // namespace
++
+ using namespace rex::graphics::xenos;
+ 
+ namespace {
+@@ -1092,7 +1130,8 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+           // User wants it fast and dangerous.
+           rex::thread::MaybeYield();
+         } else {
+-          rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
++          PreciseSleep(std::chrono::microseconds(
++              std::min(uint32_t(wait / 0x100) * 1000, REXCVAR_GET(wait_reg_mem_sleep_us))));
+         }
+         rex::thread::SyncMemory();
+         ReturnFromWait();

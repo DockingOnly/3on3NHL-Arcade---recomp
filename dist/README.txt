@@ -50,8 +50,8 @@ Settings
 nhl3on3.toml holds the settings the game needs; command-line flags override it.
 
 Internal resolution: add "resolution_scale = 2" to nhl3on3.toml (or start the game
-with --resolution_scale=2) to render at 2560x1440 instead of 1280x720. 2 holds
-60 fps on a recent graphics card; 3 is close but can dip below 60 in matches.
+with --resolution_scale=2) to render at 2560x1440 instead of 1280x720, or 3 for
+3840x2160. In testing on a fast recent graphics card, 2 and 3 both hold 60 fps.
 Press F3 in-game to show the frame rate.
 
 Known issues

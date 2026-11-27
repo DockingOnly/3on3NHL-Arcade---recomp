@@ -12,6 +12,9 @@ git apply <path-to-this-repo>/patches/rexglue/0004-scaled-resolve-downscale-layo
 git apply <path-to-this-repo>/patches/rexglue/0005-wait-reg-mem-spin-before-sleep.patch
 git apply <path-to-this-repo>/patches/rexglue/0006-texture-watch-race.patch
 git apply <path-to-this-repo>/patches/rexglue/0007-present-queue.patch
+git apply <path-to-this-repo>/patches/rexglue/0008-deferred-resolve-readbacks.patch
+git apply <path-to-this-repo>/patches/rexglue/0009-stencil-zero-tiles.patch
+git apply <path-to-this-repo>/patches/rexglue/0010-wait-reg-mem-precise-sleep.patch
 ```
 
 `0003` is only needed for the Android (arm64) build; the Windows build works without it.
@@ -25,6 +28,9 @@ git apply <path-to-this-repo>/patches/rexglue/0007-present-queue.patch
 | `0005-wait-reg-mem-spin-before-sleep.patch` | Matches at `resolution_scale=3` run a few fps slower than they need to. | The game makes the GPU command stream wait (`WAIT_REG_MEM`) for the CPU to finish with data it just read back. Each time the value wasn't there yet, the command processor slept at least ~1 ms, usually far longer than the CPU needed. Adds `wait_reg_mem_spin_us` (default 2000): poll with yields for that long before sleeping. |
 | `0006-texture-watch-race.patch` | In about two of three matches the scoreboard clock and score are blank for the whole match, and other text loses letters ("ADVANCE" shows as "A&nbsp;&nbsp;&nbsp;ANCE"), at any resolution. | The game writes glyphs into a font texture with the CPU as text first needs them. A CPU write landing between a texture's upload and the start of its write watch invalidated and unprotected the pages without telling the texture, which then kept the old data. Leaves such a texture outdated so it reloads on its next use. |
 | `0007-present-queue.patch` | The frame rate drops to 12-30 fps at any resolution when the NVIDIA driver limits the frame rate (Max Frame Rate, or G-SYNC with V-Sync and Low Latency Mode Ultra / Reflex) or forces V-Sync. | Presenting shared the GPU queue with emulation, and the driver holds that queue's lock while it waits out its frame limit inside `Present`, so every emulated GPU submission waited behind it. Paints and presents on a queue of its own (`d3d12_present_queue`), handing frames over with GPU-side waits. |
+| `0008-deferred-resolve-readbacks.patch` | Higher resolution scales drop below 60 fps: with `readback_resolve = full` the GPU emulation waited for the GPU after every resolve (10 to 17 times a frame), so the CPU and GPU took turns instead of working together. | Writes resolve results to guest memory, and the fences and interrupts after them, when the GPU has completed them, like the console GPU, and only waits where the command stream itself needs a value (`readback_resolve_deferred`). |
+| `0009-stencil-zero-tiles.patch` | About 1 ms of GPU time per frame at 3x resolution goes to copying stencil that is always zero: the game flips a shadow depth buffer between 1x and 4x MSAA 14 times a frame, and on NVIDIA each stencil copy takes 8 extra draws. | Tracks per EDRAM tile whether the stencil may be nonzero and skips copying it when it is all zero. |
+| `0010-wait-reg-mem-precise-sleep.patch` | At 3x resolution a frame is missed every few seconds even though the GPU has time to spare. | The command processor slept at least a millisecond while waiting for the game's per-frame handshakes, waking late; it now sleeps in 250 microsecond steps with a high-resolution timer (`wait_reg_mem_sleep_us`). |
 
 Upstream: the movie bug is [rexglue-sdk#364](https://github.com/rexglue/rexglue-sdk/issues/364);
 [rexglue-sdk#426](https://github.com/rexglue/rexglue-sdk/pull/426) includes an equivalent fix.

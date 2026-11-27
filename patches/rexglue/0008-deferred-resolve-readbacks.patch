@@ -1,0 +1,534 @@
+From: 3on3NHL-recomp
+Subject: [PATCH] Don't stall the command processor after every resolve readback
+
+With readback_resolve = full, every resolve waited for the GPU to finish all
+submitted work before copying the result to guest memory - 10 to 17 times a
+frame in this game, each time leaving the GPU idle while the command processor
+recorded the next part of the frame, and the command processor idle while the
+GPU caught up.
+
+The guest GPU writes resolve results, fences and interrupts when it gets to
+them, not when the command processor reads the packets. Do the same
+(readback_resolve_deferred, on by default): copy each resolve result to a ring
+of readback memory and submit, then write it to guest memory when its
+submission has completed - polled between packets and while idle - together with
+the fences (MEM_WRITE, EVENT_WRITE_SHD, scratch registers) and interrupts queued
+behind it, in order. The command processor waits for the GPU only where the
+command stream itself needs a queued value: WAIT_REG_MEM on a value not yet
+written (it peeks at queued fences first, since a fence written earlier in the
+stream precedes later commands on the guest GPU), and packets that read
+registers or memory queued writes may change.
+
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e4324..9343b011 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -169,6 +169,36 @@ class CommandProcessor {
+   virtual void PrepareForWait();
+   virtual void ReturnFromWait();
+ 
++  // Guest-visible results a backend may defer until the host GPU has completed the work before
++  // them, like the guest GPU, which writes resolve results and fences only when it gets there.
++  // OnGuestVisibleSync makes everything queued visible, waiting for the GPU if needed; it's called
++  // before the command stream reads registers or memory that queued writes may change.
++  virtual void OnGuestVisibleSync() {}
++  // Makes the queued results whose GPU work has completed visible without waiting. Returns
++  // whether anything is still queued.
++  virtual bool PollGuestVisibleWrites() { return false; }
++  // Something the guest CPU can observe: a register value and/or a 32-bit store to physical memory
++  // (memory_value is stored as is, already in guest byte order), or an interrupt.
++  static constexpr uint32_t kGuestVisibleWriteNoRegister = UINT32_MAX;
++  struct GuestVisibleWrite {
++    uint32_t register_index;
++    uint32_t register_value;
++    bool has_memory;
++    uint32_t memory_address;
++    uint32_t memory_value;
++    // Bit n: interrupt CPU n.
++    uint32_t interrupt_cpu_mask;
++  };
++  // Returns true if the backend has queued the write behind deferred results.
++  virtual bool QueueGuestVisibleWrite(const GuestVisibleWrite& write) { return false; }
++  // The latest queued value of a register or a 32-bit word of physical memory, as the command
++  // processor itself would see it on the guest GPU, where the write precedes later commands.
++  virtual bool PeekQueuedGuestRegister(uint32_t index, uint32_t& value) const { return false; }
++  virtual bool PeekQueuedGuestMemory32(uint32_t physical_address, uint32_t& value) const {
++    return false;
++  }
++  void StoreGuestVisible32(uint32_t physical_address, uint32_t value);
++
+   uint32_t ExecutePrimaryBuffer(uint32_t start_index, uint32_t end_index);
+   virtual void OnPrimaryBufferEnd() {}
+   void ExecuteIndirectBuffer(uint32_t ptr, uint32_t length);
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 96d362b3..97a0783f 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -366,6 +366,16 @@ class D3D12CommandProcessor : public CommandProcessor {
+   bool UpdateBindings(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader,
+                       ID3D12RootSignature* root_signature, bool shared_memory_is_uav);
+   bool IssueCopy_ReadbackResolvePath();
++  // readback_resolve_deferred: performs the queued guest-visible writes in order - resolve
++  // results and the fences and interrupts queued behind them. With await_gpu, waits for the GPU
++  // once and performs all of them; otherwise only those whose GPU work has completed.
++  void ApplyDeferredGuestWrites(bool await_gpu);
++  bool AllocateDeferredReadback(uint32_t size, uint32_t& offset_out);
++  void OnGuestVisibleSync() override { ApplyDeferredGuestWrites(true); }
++  bool PollGuestVisibleWrites() override;
++  bool QueueGuestVisibleWrite(const GuestVisibleWrite& write) override;
++  bool PeekQueuedGuestRegister(uint32_t index, uint32_t& value) const override;
++  bool PeekQueuedGuestMemory32(uint32_t physical_address, uint32_t& value) const override;
+   bool IssueDraw_MemexportReadbackFullPath(uint32_t total_size);
+   bool IssueDraw_MemexportReadbackFastPath(uint32_t total_size);
+ 
+@@ -382,6 +392,22 @@ class D3D12CommandProcessor : public CommandProcessor {
+     uint64_t last_used_frame = 0;
+   };
+   void EvictOldReadbackBuffers(std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map);
++  struct DeferredGuestWrite {
++    // For a readback, the submission that has the copy; 0 otherwise.
++    uint64_t submission;
++    // 0 if not a readback.
++    uint32_t readback_length;
++    uint32_t readback_buffer_offset;
++    uint32_t readback_guest_address;
++    GuestVisibleWrite write;
++  };
++  std::deque<DeferredGuestWrite> deferred_guest_writes_;
++  uint32_t deferred_readback_count_ = 0;
++  // Ring buffer of the readbacks in flight, in allocation (and completion) order.
++  ID3D12Resource* deferred_readback_buffer_ = nullptr;
++  void* deferred_readback_mapping_ = nullptr;
++  uint32_t deferred_readback_buffer_size_ = 0;
++  uint32_t deferred_readback_head_ = 0;
+   static constexpr uint32_t kReadbackBufferSizeIncrement = 16 * 1024 * 1024;
+   static constexpr size_t kMaxReadbackBuffers = 256;
+   static constexpr uint64_t kReadbackBufferEvictionAgeFrames = 60;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index e61fdb2f..9261ccf9 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -225,9 +225,11 @@ void CommandProcessor::WorkerThreadMain() {
+       PrepareForWait();
+       uint32_t loop_count = 0;
+       do {
++        // The guest may be waiting for deferred results: complete them as the GPU gets there.
++        bool guest_writes_pending = PollGuestVisibleWrites();
+         // If we spin around too much, revert to a "low-power" state.
+         if (loop_count > 500) {
+-          const int wait_time_ms = 5;
++          const int wait_time_ms = guest_writes_pending ? 1 : 5;
+           rex::thread::Wait(write_ptr_index_event_.get(), true,
+                             std::chrono::milliseconds(wait_time_ms));
+         }
+@@ -359,6 +361,20 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+     return;
+   }
+ 
++  if (index >= XE_GPU_REG_SCRATCH_REG0 && index <= XE_GPU_REG_SCRATCH_REG7) {
++    // The guest reads scratch registers and their memory copies as fences.
++    uint32_t scratch_reg = index - XE_GPU_REG_SCRATCH_REG0;
++    GuestVisibleWrite write = {index, value, false, 0, 0, 0};
++    if ((1 << scratch_reg) & regs.values[XE_GPU_REG_SCRATCH_UMSK]) {
++      write.has_memory = true;
++      write.memory_address = regs.values[XE_GPU_REG_SCRATCH_ADDR] + (scratch_reg * 4);
++      write.memory_value = rex::byte_swap(value);
++    }
++    if (QueueGuestVisibleWrite(write)) {
++      return;
++    }
++  }
++
+   // Volatile for the WAIT_REG_MEM loop.
+   const_cast<volatile uint32_t&>(regs.values[index]) = value;
+   if (!regs.GetRegisterInfo(index)) {
+@@ -758,6 +774,20 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
+     }
+   }
+ 
++  switch (opcode) {
++    case PM4_REG_TO_MEM:
++    case PM4_COND_WRITE:
++    case PM4_EVENT_WRITE_EXT:
++    case PM4_EVENT_WRITE_ZPD:
++      // These read registers or memory that queued writes may change, or write memory outside
++      // the queue: make everything queued visible first.
++      OnGuestVisibleSync();
++      break;
++    default:
++      PollGuestVisibleWrites();
++      break;
++  }
++
+   bool result = false;
+   switch (opcode) {
+     case PM4_ME_INIT:
+@@ -922,6 +952,9 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader,
+ 
+   // generate interrupt from the command stream
+   uint32_t cpu_mask = reader->ReadAndSwap<uint32_t>();
++  if (QueueGuestVisibleWrite({kGuestVisibleWriteNoRegister, 0, false, 0, 0, cpu_mask & 0x3F})) {
++    return true;
++  }
+   for (int n = 0; n < 6; n++) {
+     if (cpu_mask & (1 << n)) {
+       if (graphics_system_) {
+@@ -996,6 +1029,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+   bool is_memory = (wait_info & 0x10) != 0;
+ 
+   bool matched = false;
++  bool guest_visible_synced = false;
+   // Poll without sleeping for a short while first: the value is often written
+   // within a fraction of a millisecond, and a sleep would overshoot that.
+   const auto spin_deadline = std::chrono::steady_clock::now() +
+@@ -1003,10 +1037,13 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+   do {
+     uint32_t value = 0;
+     if (is_memory) {
+-      value =
+-          *reinterpret_cast<uint32_t*>(memory_->TranslatePhysical(poll_reg_addr & ~uint32_t(0x3)));
++      // A fence written earlier in the command stream may still be queued.
++      if (!PeekQueuedGuestMemory32(poll_reg_addr & ~uint32_t(0x3), value)) {
++        value = *reinterpret_cast<uint32_t*>(
++            memory_->TranslatePhysical(poll_reg_addr & ~uint32_t(0x3)));
++      }
+       value = xenos::GpuSwap(value, static_cast<xenos::Endian>(poll_reg_addr & 0x3));
+-    } else {
++    } else if (!PeekQueuedGuestRegister(poll_reg_addr, value)) {
+       value = ReadRegisterValue(poll_reg_addr);
+       if (poll_reg_addr == XE_GPU_REG_COHER_STATUS_HOST) {
+         MakeCoherent();
+@@ -1040,6 +1077,11 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+         break;
+     }
+     if (!matched) {
++      // The value may depend on the guest CPU having seen earlier results.
++      if (!guest_visible_synced) {
++        guest_visible_synced = true;
++        OnGuestVisibleSync();
++      }
+       // Wait.
+       if (wait >= 0x100 && std::chrono::steady_clock::now() < spin_deadline) {
+         rex::thread::MaybeYield();
+@@ -1121,7 +1163,7 @@ bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader,
+     auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
+     auto addr = write_addr & ~0x3;
+     write_data = GpuSwap(write_data, endianness);
+-    memory::store(memory_->TranslatePhysical(addr), write_data);
++    StoreGuestVisible32(addr, write_data);
+     write_addr += 4;
+   }
+ 
+@@ -1227,10 +1269,17 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
+   auto endianness = static_cast<xenos::Endian>(address & 0x3);
+   address &= ~0x3;
+   data_value = GpuSwap(data_value, endianness);
+-  memory::store(memory_->TranslatePhysical(address), data_value);
++  StoreGuestVisible32(address, data_value);
+   return true;
+ }
+ 
++void CommandProcessor::StoreGuestVisible32(uint32_t physical_address, uint32_t value) {
++  if (!QueueGuestVisibleWrite(
++          {kGuestVisibleWriteNoRegister, 0, true, physical_address, value, 0})) {
++    memory::store(memory_->TranslatePhysical(physical_address), value);
++  }
++}
++
+ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* reader,
+                                                           uint32_t packet, uint32_t count) {
+   // generate a screen extent event
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a53..6e6a419f 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -42,6 +42,11 @@ REXCVAR_DEFINE_BOOL(d3d12_readback_memexport, false, "GPU/D3D12",
+ REXCVAR_DEFINE_BOOL(d3d12_readback_resolve, false, "GPU/D3D12",
+                     "Read render-to-texture results on the CPU")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_BOOL(readback_resolve_deferred, true, "GPU",
++                    "With readback_resolve = full, don't stall after each resolve: write its "
++                    "result to guest memory, and the fences and interrupts after it, when the GPU "
++                    "has completed it, like the guest GPU")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
+                     "Submit command list when PM4 primary buffer ends")
+@@ -1631,6 +1636,17 @@ void D3D12CommandProcessor::ShutdownContext() {
+   InvalidateAllVertexBufferResidency();
+   ShutdownOcclusionQueryResources();
+ 
++  deferred_guest_writes_.clear();
++  deferred_readback_count_ = 0;
++  if (deferred_readback_buffer_) {
++    deferred_readback_buffer_->Unmap(0, nullptr);
++    deferred_readback_buffer_->Release();
++    deferred_readback_buffer_ = nullptr;
++  }
++  deferred_readback_mapping_ = nullptr;
++  deferred_readback_buffer_size_ = 0;
++  deferred_readback_head_ = 0;
++
+   ui::d3d12::util::ReleaseAndNull(readback_buffer_);
+   readback_buffer_size_ = 0;
+   for (auto& resolve_readback_pair : readback_buffers_) {
+@@ -2901,6 +2917,10 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+     return true;
+   }
+ 
++  bool deferred =
++      GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve)) == ReadbackResolveMode::kFull &&
++      REXCVAR_GET(readback_resolve_deferred);
++
+   bool is_scaled = texture_cache_->IsDrawResolutionScaled();
+   uint64_t resolve_key = MakeReadbackResolveKey(written_address, written_length);
+   ReadbackBuffer& rb = readback_buffers_[resolve_key];
+@@ -2909,7 +2929,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+   uint32_t write_index = rb.current_index;
+   uint32_t size = AlignReadbackBufferSize(written_length);
+ 
+-  if (size > rb.sizes[write_index]) {
++  if (!deferred && size > rb.sizes[write_index]) {
+     const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+     ID3D12Device* device = provider.GetDevice();
+     D3D12_RESOURCE_DESC buffer_desc;
+@@ -2937,7 +2957,18 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+     }
+   }
+ 
+-  if (!rb.buffers[write_index]) {
++  ID3D12Resource* dest_buffer = rb.buffers[write_index];
++  uint32_t dest_offset = 0;
++  if (deferred) {
++    dest_buffer = nullptr;
++    if (!AllocateDeferredReadback(
++            rex::align(written_length, uint32_t(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT)),
++            dest_offset)) {
++      return true;
++    }
++    dest_buffer = deferred_readback_buffer_;
++  }
++  if (!dest_buffer) {
+     return true;
+   }
+ 
+@@ -3055,7 +3086,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+     PushTransitionBarrier(resolve_downscale_buffer_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_COPY_SOURCE);
+     SubmitBarriers();
+-    deferred_command_list_.D3DCopyBufferRegion(rb.buffers[write_index], 0,
++    deferred_command_list_.D3DCopyBufferRegion(dest_buffer, dest_offset,
+                                                resolve_downscale_buffer_.Get(), 0, written_length);
+     PushTransitionBarrier(resolve_downscale_buffer_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+@@ -3065,10 +3096,21 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+     shared_memory_->UseAsCopySource();
+     SubmitBarriers();
+     ID3D12Resource* shared_memory_buffer = shared_memory_->GetBuffer();
+-    deferred_command_list_.D3DCopyBufferRegion(rb.buffers[write_index], 0, shared_memory_buffer,
++    deferred_command_list_.D3DCopyBufferRegion(dest_buffer, dest_offset, shared_memory_buffer,
+                                                written_address, written_length);
+   }
+ 
++  if (deferred) {
++    deferred_guest_writes_.push_back(
++        {submission_current_, written_length, dest_offset, written_address, {}});
++    ++deferred_readback_count_;
++    // Let the GPU start on it now, so the result becomes visible soon.
++    if (CanEndSubmissionImmediately()) {
++      EndSubmission(false);
++    }
++    return true;
++  }
++
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
+   bool use_delayed_sync =
+       readback_mode == ReadbackResolveMode::kFast || readback_mode == ReadbackResolveMode::kSome;
+@@ -3102,6 +3144,187 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+   return true;
+ }
+ 
++bool D3D12CommandProcessor::AllocateDeferredReadback(uint32_t size, uint32_t& offset_out) {
++  for (uint32_t attempt = 0; attempt < 2; ++attempt) {
++    // The oldest readback still in flight; allocations complete in order.
++    uint32_t tail = UINT32_MAX;
++    for (const DeferredGuestWrite& entry : deferred_guest_writes_) {
++      if (entry.readback_length) {
++        tail = entry.readback_buffer_offset;
++        break;
++      }
++    }
++    if (tail == UINT32_MAX) {
++      deferred_readback_head_ = 0;
++      if (size <= deferred_readback_buffer_size_) {
++        offset_out = 0;
++        deferred_readback_head_ = size;
++        return true;
++      }
++    } else if (deferred_readback_head_ > tail) {
++      // Free: [head, end) and [0, tail).
++      if (deferred_readback_head_ + size <= deferred_readback_buffer_size_) {
++        offset_out = deferred_readback_head_;
++        deferred_readback_head_ += size;
++        return true;
++      }
++      if (size < tail) {
++        offset_out = 0;
++        deferred_readback_head_ = size;
++        return true;
++      }
++    } else if (deferred_readback_head_ + size < tail) {
++      // Free: [head, tail), strictly less so the head never reaches the tail.
++      offset_out = deferred_readback_head_;
++      deferred_readback_head_ += size;
++      return true;
++    }
++    if (attempt) {
++      break;
++    }
++    // Full or too small: complete everything in flight, then grow if needed.
++    ApplyDeferredGuestWrites(true);
++    if (size > deferred_readback_buffer_size_) {
++      // Every copy into the old buffer has been awaited.
++      if (deferred_readback_buffer_) {
++        deferred_readback_buffer_->Unmap(0, nullptr);
++        deferred_readback_buffer_->Release();
++        deferred_readback_buffer_ = nullptr;
++        deferred_readback_mapping_ = nullptr;
++        deferred_readback_buffer_size_ = 0;
++      }
++      uint32_t new_size = rex::align(std::max(size, uint32_t(64 * 1024 * 1024)),
++                                     kReadbackBufferSizeIncrement);
++      const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
++      D3D12_RESOURCE_DESC buffer_desc;
++      ui::d3d12::util::FillBufferResourceDesc(buffer_desc, new_size, D3D12_RESOURCE_FLAG_NONE);
++      ID3D12Resource* buffer = nullptr;
++      if (FAILED(provider.GetDevice()->CreateCommittedResource(
++              &ui::d3d12::util::kHeapPropertiesReadback, provider.GetHeapFlagCreateNotZeroed(),
++              &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer)))) {
++        REXGPU_ERROR("Failed to create a {} MB deferred resolve readback buffer", new_size >> 20);
++        return false;
++      }
++      D3D12_RANGE read_range = {0, new_size};
++      void* mapping = nullptr;
++      if (FAILED(buffer->Map(0, &read_range, &mapping))) {
++        REXGPU_ERROR("Failed to map the deferred resolve readback buffer");
++        buffer->Release();
++        return false;
++      }
++      deferred_readback_buffer_ = buffer;
++      deferred_readback_mapping_ = mapping;
++      deferred_readback_buffer_size_ = new_size;
++    }
++  }
++  return false;
++}
++
++void D3D12CommandProcessor::ApplyDeferredGuestWrites(bool await_gpu) {
++  if (deferred_guest_writes_.empty()) {
++    return;
++  }
++  uint64_t completed;
++  bool gpu_completed = true;
++  if (await_gpu) {
++    gpu_completed = AwaitAllQueueOperationsCompletion();
++    completed = UINT64_MAX;
++  } else {
++    completed = submission_fence_->GetCompletedValue();
++  }
++  RegisterFile& regs = *register_file_;
++  while (!deferred_guest_writes_.empty()) {
++    // A copy: an interrupt runs guest code.
++    const DeferredGuestWrite entry = deferred_guest_writes_.front();
++    if (entry.readback_length) {
++      if (entry.submission > completed) {
++        break;
++      }
++      uint8_t* destination = memory_->TranslatePhysical(entry.readback_guest_address);
++      if (gpu_completed && deferred_readback_mapping_ && destination) {
++        std::memcpy(destination,
++                    static_cast<const uint8_t*>(deferred_readback_mapping_) +
++                        entry.readback_buffer_offset,
++                    entry.readback_length);
++      }
++      --deferred_readback_count_;
++    } else {
++      if (entry.write.register_index != kGuestVisibleWriteNoRegister) {
++        const_cast<volatile uint32_t&>(regs.values[entry.write.register_index]) =
++            entry.write.register_value;
++      }
++      if (entry.write.has_memory) {
++        memory::store(memory_->TranslatePhysical(entry.write.memory_address),
++                      entry.write.memory_value);
++      }
++    }
++    deferred_guest_writes_.pop_front();
++    if (entry.write.interrupt_cpu_mask && graphics_system_) {
++      for (uint32_t n = 0; n < 6; ++n) {
++        if (entry.write.interrupt_cpu_mask & (uint32_t(1) << n)) {
++          graphics_system_->DispatchInterruptCallback(1, n);
++        }
++      }
++    }
++  }
++  if (!deferred_readback_count_) {
++    deferred_readback_head_ = 0;
++  }
++}
++
++bool D3D12CommandProcessor::PollGuestVisibleWrites() {
++  if (deferred_guest_writes_.empty()) {
++    return false;
++  }
++  // If a readback is still in the open submission (ending it wasn't possible right after the
++  // copy), submit it so the GPU gets to it.
++  if (submission_open_ && CanEndSubmissionImmediately()) {
++    for (const DeferredGuestWrite& entry : deferred_guest_writes_) {
++      if (entry.readback_length && entry.submission >= submission_current_) {
++        EndSubmission(false);
++        break;
++      }
++    }
++  }
++  ApplyDeferredGuestWrites(false);
++  return !deferred_guest_writes_.empty();
++}
++
++bool D3D12CommandProcessor::PeekQueuedGuestRegister(uint32_t index, uint32_t& value) const {
++  for (auto it = deferred_guest_writes_.crbegin(); it != deferred_guest_writes_.crend(); ++it) {
++    if (!it->readback_length && it->write.register_index == index) {
++      value = it->write.register_value;
++      return true;
++    }
++  }
++  return false;
++}
++
++bool D3D12CommandProcessor::PeekQueuedGuestMemory32(uint32_t physical_address,
++                                                    uint32_t& value) const {
++  for (auto it = deferred_guest_writes_.crbegin(); it != deferred_guest_writes_.crend(); ++it) {
++    if (it->readback_length) {
++      // A queued resolve covering the word changes it too: let the caller wait for it.
++      if (physical_address >= it->readback_guest_address &&
++          physical_address - it->readback_guest_address < it->readback_length) {
++        return false;
++      }
++    } else if (it->write.has_memory && it->write.memory_address == physical_address) {
++      value = it->write.memory_value;
++      return true;
++    }
++  }
++  return false;
++}
++
++bool D3D12CommandProcessor::QueueGuestVisibleWrite(const GuestVisibleWrite& write) {
++  if (deferred_guest_writes_.empty()) {
++    return false;
++  }
++  deferred_guest_writes_.push_back({0, 0, 0, 0, write});
++  return true;
++}
++
+ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
+   if (await_submission >= submission_current_) {
+     if (submission_open_) {
