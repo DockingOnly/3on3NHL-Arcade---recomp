@@ -57,7 +57,6 @@ Press F3 in-game to show the frame rate.
 Known issues
 ------------
 - Online play (Xbox Live menu) is not available.
-- In some matches the scoreboard clock and score stay blank for the whole match.
 - The game can occasionally freeze on the loading screen before a match. Close it
   and start it again; please report it with the logs folder if it happens.
 
