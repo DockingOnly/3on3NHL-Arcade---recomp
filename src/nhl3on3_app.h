@@ -5,15 +5,20 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <optional>
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/ui_event.h>
 
 #include "kernel_stubs.h"
 #include "nhl3on3_frame_rate.h"
+#include "nhl3on3_settings.h"
+#include "nhl3on3_ui_patch.h"
 
 class Nhl3on3App : public rex::ReXApp {
  public:
@@ -34,7 +39,10 @@ class Nhl3on3App : public rex::ReXApp {
 
   // Find the game files when --game_data_root is not given: a "game" folder next to the
   // executable (release layout), else "game/extracted" in any parent folder (repo layout).
+  // In-game options are saved to the config file (nhl3on3.toml next to the executable unless
+  // given), see nhl3on3_settings.cpp.
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    nhl3on3::SetConfigPath(paths.config_path);
     if (!paths.game_data_root.empty()) {
       return;
     }
@@ -50,6 +58,14 @@ class Nhl3on3App : public rex::ReXApp {
         return;
       }
     }
+  }
+
+  // Patch the front-end screens in data0.big before the runtime opens the game files (logging
+  // is up by now; see nhl3on3_ui_patch.cpp).
+  std::optional<rex::PathConfig> OnFinalizePaths(
+      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)>) override {
+    nhl3on3::ApplyUiPatches(defaults.game_data_root);
+    return defaults;
   }
 
   // The game's Achievements menu item opens the achievements overlay, the same as its hotkey

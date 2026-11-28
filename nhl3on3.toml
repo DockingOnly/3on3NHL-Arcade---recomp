@@ -18,6 +18,13 @@ readback_resolve = "full"
 # is copied, which halves the frame rate at higher resolution_scale.
 execute_unclipped_draw_vs_on_cpu = true
 
+# --- Front end (ported from 3on3ArcadeRecomp) ---
+# Skip the EA Sports intro movie at boot.
+skip_intro = false
+# Options changed in the game's menus (camera, volumes, rules, ...) are kept between sessions:
+# the game writes them to a game_settings line at the end of this file. Delete that line to go
+# back to the game's defaults, or set restore_game_settings = false to stop saving them.
+
 # --- Online play (ported from 3on3ArcadeRecomp) ---
 # Emulate a signed-in Xbox LIVE profile and the XNet stack. Off in releases until this
 # port has its own online play; while off, the game contacts no server.

@@ -55,6 +55,7 @@
 #include <rex/system/xmemory.h>
 
 #include "nhl3on3_roster.h"
+#include "nhl3on3_settings.h"
 #include "nhl3on3_team_lobby.h"
 #include "runtime_export.h"
 
@@ -1130,13 +1131,21 @@ void NoteLobbySend(const uint8_t* base, uint32_t buffer, uint32_t length) {
   if (cmd != "~png") {
     REXLOG_INFO("[lobby] -> {} {}", cmd, LobbySummary(body));
   }
+  // Every console runs the same simulation, so online games use the game's
+  // default options rather than each player's saved ones (nhl3on3_settings.cpp).
+  if (cmd == "glea" || cmd == "gdel") {
+    nhl3on3::UseDefaultGameSettings(false);
+    return;
+  }
   if (cmd != "gqwk" && cmd != "gcre" && cmd != "gjoi") {
     return;
   }
   const auto flags = LobbyField(body, "SYSFLAGS");
   if (cmd == "gqwk" && !flags) {
+    nhl3on3::UseDefaultGameSettings(false);
     return;  // MODE=3 cancels a search
   }
+  nhl3on3::UseDefaultGameSettings(true);
   const bool ranked = flags && RankedFlags(*flags);
   g_ranked_search.store(ranked);
   g_game_consoles.store(0);

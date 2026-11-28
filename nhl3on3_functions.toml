@@ -224,3 +224,37 @@
 "0x82E116C8" = { size = 0x20 }  # data ref @0x8220F81C
 "0x82E116E8" = { size = 0x20 }  # data ref @0x8220F820
 "0x82E11708" = { size = 0x20 }  # data ref @0x8220F824
+
+# --- Front end (src/nhl3on3_ui.cpp; ported from startupandhold/3on3ArcadeRecomp, MIT) ---
+
+# Intro skip: sub_82A11638 compares a movie player's state (r3, just returned
+# by the player's vtable +88) against the last one seen and fires the script
+# callbacks for "playing" (2) and "stopped" (4).
+[[midasm_hook]]
+name = "Nhl3on3MovieStateHook"
+address = 0x82A11668
+registers = ["r3"]
+
+# Menu text: the LocalizeString (sub_82AC3FC0) and LocalizeStringMixedCase
+# (sub_82AC4040) script natives. Lookup hooks run once the result string at
+# sp+80 is filled; convert hooks run after it was copied into a script value
+# and before its destructor.
+[[midasm_hook]]
+name = "Nhl3on3LocalizeLookupHook"
+address = 0x82AC400C
+registers = ["r1"]
+
+[[midasm_hook]]
+name = "Nhl3on3LocalizeConvertHook"
+address = 0x82AC4014
+registers = ["r1"]
+
+[[midasm_hook]]
+name = "Nhl3on3LocalizeLookupHook"
+address = 0x82AC408C
+registers = ["r1"]
+
+[[midasm_hook]]
+name = "Nhl3on3LocalizeConvertHook"
+address = 0x82AC4094
+registers = ["r1"]

@@ -17,7 +17,7 @@ The release contains code from these projects. Their license texts are in
 | [toml++](https://github.com/marzer/tomlplusplus) | MIT | `rexruntime.dll` (settings file loader) |
 | [SIMDe](https://github.com/simd-everywhere/simde) | MIT | `nhl3on3.exe` |
 | [UTF8-CPP](https://github.com/nemtrif/utfcpp) | Boost Software License 1.0 | header-only, used by the ReXGlue runtime |
-| [3on3ArcadeRecomp](https://github.com/startupandhold/3on3ArcadeRecomp) by startupandhold (online play: Xbox LIVE/XNet emulation, tunnel client, lockstep relay, team lobby, roster loader) | MIT | `nhl3on3.exe` |
+| [3on3ArcadeRecomp](https://github.com/startupandhold/3on3ArcadeRecomp) by startupandhold (online play: Xbox LIVE/XNet emulation, tunnel client, lockstep relay, team lobby; roster loader; front-end mod and its patcher; saved in-game options; menu text overrides and intro skip) | MIT | `nhl3on3.exe` |
 | [stb_image](https://github.com/nothings/stb) by Sean Barrett (`thirdparty/stb_image.h`, roster-pack art) | MIT or public domain (MIT chosen) | `nhl3on3.exe` |
 
 Patch `0004` in [`patches/rexglue`](patches/rexglue/README.md) ports the `resolve_downscale`

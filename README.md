@@ -172,9 +172,12 @@ Current rosters built into the game rather than installed as a mod:
 
 ### Carried over from upstream
 
-- 🚧 **Menu patching and saved options:** port upstream's front-end patcher, which the roster
-  loader needs before it can run and which new menu rows are built on, and its saving of
-  in-game options to `nhl3on3.toml` (the game itself forgets them at exit).
+- ✅ **Menu patching and saved options:** the front-end patcher (`tools/ui_mod.py`, applied to
+  your copy at startup), which the roster loader needs and new menu rows are built on. Options
+  changed in the game's menus are saved to `nhl3on3.toml` (the game itself forgets them at
+  exit), and online games use the game's defaults so every console agrees. The main menu's
+  last item is now **Quit Game** and closes the game. Upstream's Select Sides and Starting
+  Lineups patches for team play wait for the online code to catch up.
 - 🚧 **Online play:** bring back the game's online mode through a community server and make
   the two online achievements (*Let's Play* and *Team Player*) earnable.
 - 🚧 **Mods:** custom rosters (the same `roster.json` format as the 2026-27 edition), new team

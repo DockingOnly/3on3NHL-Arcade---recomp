@@ -70,17 +70,34 @@ What's in this repository:
 | Path | Purpose |
 |---|---|
 | `nhl3on3_manifest.toml` | ReXGlue project manifest: which XEX to recompile |
-| `nhl3on3_functions.toml` | Functions the recompiler's analysis misses (C++ thunks, leaf getters reached only through vtables or callbacks) |
+| `nhl3on3_functions.toml` | Functions the recompiler's analysis misses (C++ thunks, leaf getters reached only through vtables or callbacks), and mid-function hooks (`[[midasm_hook]]`) into the front end |
 | `nhl3on3.toml` | Runtime settings, copied next to the executable |
 | `src/` | The app class and kernel exports the runtime lacks or only stubs |
 | `launcher/` | The launcher (C#, WPF, .NET 8): builds the game from the player's copy |
-| `tools/` | `make_release.ps1` (assembles a release with the build kit), `make_icon.ps1` |
+| `tools/` | `make_release.ps1` (assembles a release with the build kit), `make_icon.ps1`, and the Python tools for the game's files (see below) |
 | `android/` | The Android (arm64) app: a Gradle/SDL3 project that builds the game into an APK |
 | `patches/rexglue/` | Fixes the port needs in ReXGlue |
 | `dist/` | Player README and license texts shipped with releases |
 | `docs/images/` | Screenshots for the README |
 
 The recompiler's generated C++ (`generated/default/`) is built locally and never committed.
+
+### Python tools
+
+Python 3, standard library only unless noted. Ported from
+[3on3ArcadeRecomp](https://github.com/startupandhold/3on3ArcadeRecomp) (MIT) except where noted.
+
+| Tool | What it does |
+|---|---|
+| `ui_mod.py GAME_DIR --emit-cpp` | Builds the front-end mod (ActionScript patches to the menu screens in `data0.big`) and writes it to `src/nhl3on3_ui_patches.inc`, which the game applies to the player's copy at startup. Re-run it after changing a patch. `--check` prints the disassembly of every patched function; without a flag it patches `GAME_DIR` directly. |
+| `apt_dis.py` | Disassembles the ActionScript in an EA Apt screen (`.apt` plus its `.const`) |
+| `ea_big.py` | Lists or extracts EA BIG archives, including the RefPack-compressed ones nested in `data0.big` |
+| `ea_tdb.py` | Reads and edits the game database (`db/nhlng.db`) |
+| `xenos_texture.py` | Decodes and encodes the Xbox 360 tiled DXT5 textures the portraits use |
+| `roster_mod.py` | Roster packs: `init`, `slots`, `check`, `headshot` (needs Pillow), `pack` (this repository's), plus `apply` / `restore`, which write a roster into an extracted game without starting it (`roster_apply.py`, from 3on3ArcadeRecomp) |
+| `portrait_style.py` | Shared portrait styles (ink, duotone, poster) for `roster_mod.py headshot --style`. Needs Pillow. This repository's. |
+| `fetch_roster_facts.py` | Fills numbers, handedness and birth details in a `roster.json` from the NHL's public API. This repository's. |
+| `extract_portraits.py` | Dumps the game's own 43 portraits to PNG for reference; keep the output out of the repository. Needs Pillow. This repository's. |
 
 ## 4. Build the launcher
 
