@@ -26,6 +26,7 @@ set(NHL3ON3_SOURCES
     src/nhl3on3_roster.cpp
     src/nhl3on3_guest_log.cpp
     src/nhl3on3_frame_rate.cpp
+    src/nhl3on3_request_wait.cpp
 )
 
 if(ANDROID)
