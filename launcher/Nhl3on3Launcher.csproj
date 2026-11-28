@@ -10,7 +10,7 @@
     <RootNamespace>Nhl3on3Launcher</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>launcher.ico</ApplicationIcon>
-    <Version>0.1.0-prealpha.4</Version>
+    <Version>0.1.0-prealpha.5</Version>
     <Product>3 on 3 NHL Arcade PC port</Product>
     <Description>Builds and starts the 3 on 3 NHL Arcade PC port from your own copy of the game</Description>
   </PropertyGroup>
