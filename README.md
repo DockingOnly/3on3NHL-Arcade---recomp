@@ -16,8 +16,8 @@ frame rate, upscaling and controller prompts. See [Credits](#credits) for everyo
 this builds on.
 
 > [!WARNING]
-> **This fork is a work in progress.** Apart from a steady 60 fps at native resolution, every
-> feature below is still being worked on and may be incomplete or broken.
+> **This fork is in pre-alpha.** Apart from a steady 60 fps at 1x, 2x and 3x internal
+> resolution, every feature below is still being worked on and may be incomplete or broken.
 
 > [!IMPORTANT]
 > **No game files are included.** This repository and anything built from it contain no code,
@@ -39,11 +39,11 @@ Legend: ✅ done · 🚧 work in progress
 | Feature | Status |
 |---|---|
 | 60 fps at native resolution | ✅ |
+| Higher internal resolution (2x and 3x at 60 fps) | ✅ |
 | Menus, intro movies and full matches | 🚧 |
 | Xbox and PlayStation controllers | 🚧 |
 | Achievements (**Achievements** menu item or **F7**, saved between sessions) | 🚧 |
-| Launcher that builds the game from your own copy | 🚧 |
-| Higher internal resolution | 🚧 |
+| Launcher that builds the game from your own copy (in the pre-alpha releases) | 🚧 |
 | Android (arm64) build | 🚧 |
 
 <p align="center"><img src="docs/images/main-menu.jpg" alt="Main menu" width="720"></p>
@@ -57,34 +57,26 @@ text. Running the game sharper, smoother and on modern hardware is this fork's m
 
 | Area | Upstream | This fork |
 |---|---|---|
-| Internal resolution above 1x | Not planned (text and some textures break) | 🚧 Text fixed by [ReXGlue patch 0004](patches/rexglue/README.md); 2x and 3x run but drop below 60 fps for now |
+| Internal resolution above 1x | Not planned (text and some textures break) | ✅ 2x and 3x hold 60 fps in matches, with correct text ([ReXGlue patches](patches/rexglue/README.md) 0004 and 0008–0010) |
 | Frame rate | Native 60 fps | 🚧 Live frame stats in the F3 overlay; working toward going above 60 |
 | DLSS / upscaling | Not on the roadmap | 🚧 Planned |
 | Resolution options | Not on the roadmap | 🚧 Planned, in game and in the launcher |
 | Controller button prompts | Xbox prompts only | 🚧 Planned: prompts that match the pad you use (Xbox or PlayStation) |
-| Performance | Not on the roadmap | 🚧 Profiling the GPU work behind each frame |
+| Performance | Not on the roadmap | 🚧 The GPU emulation no longer stalls after each resolve; next is lighter hardware |
 
 ---
 
 ## Playing it
 
-### Option A: prebuilt release (upstream)
+### Option A: this fork's pre-alpha release
 
-This fork has **no releases yet**. The upstream project publishes Windows builds, which do
-**not** include this fork's changes:
+Pre-alpha builds are on the [Releases page](https://github.com/DockingOnly/3on3NHL-Arcade---recomp/releases)
+(the newest is at the top; they're marked as pre-releases, so GitHub doesn't show them as
+"latest"). Expect bugs, and include the version and the `logs` folder when you report one.
 
-1. Get the [latest upstream release](https://github.com/Wndwsqrrl/3on3NHL-recomp/releases/latest)
-   and unzip it.
-2. Put your XBLA package in the same folder: either the whole `58410975` folder or just the
-   file inside `58410975\000D0000\` (the file with a long hex name).
-3. Open `NHL 3on3 Launcher.exe`, click **Set up game**, then **Play**. The launcher checks
-   that the package really is 3 on 3 NHL Arcade and unpacks it into a `game` folder.
-
-### Coming with this fork's releases: the launcher builds the game for you
-
-This fork's releases will ship the launcher and a build kit (the port's source and the patched
-ReXGlue SDK) instead of a prebuilt game. You point the launcher at your own copy and it does
-the rest on your PC:
+A release ships the launcher and a build kit (the port's source and the patched ReXGlue SDK)
+instead of a prebuilt game. You point the launcher at your own copy and it does the rest on
+your PC:
 
 1. Unzip the release somewhere you can write to and open `NHL 3on3 Launcher.exe`.
 2. Drop your game onto it: the `58410975` folder, the package file inside
@@ -95,8 +87,19 @@ the rest on your PC:
 4. Click **Play**.
 
 If a build stops, the launcher shows why; **Try again** picks up where it stopped, and the
-full log is `logs\build.log`. [BUILDING.md](BUILDING.md#5-assemble-a-release) explains how a
-release is put together.
+full log is `logs\build.log`. When a newer release comes out, its launcher offers to rebuild,
+and your current build stays in place until the new one is ready.
+[BUILDING.md](BUILDING.md#5-assemble-a-release) explains how a release is put together.
+
+To raise the internal resolution, add `resolution_scale = 2` (2560x1440) or `3` (3840x2160)
+to `nhl3on3.toml` next to `nhl3on3.exe`. Press **F3** in game for the frame-rate overlay.
+
+### Upstream's prebuilt release
+
+The upstream project publishes prebuilt Windows builds, which do **not** include this fork's
+changes: get the [latest upstream release](https://github.com/Wndwsqrrl/3on3NHL-recomp/releases/latest),
+put your XBLA package next to it, open `NHL 3on3 Launcher.exe`, click **Set up game**, then
+**Play**.
 
 ### Option B: build this fork
 
@@ -104,7 +107,8 @@ release is put together.
 
 - Clang 20 or newer and CMake (Visual Studio Build Tools with its Clang component works)
 - ReXGlue SDK v0.10.0 with the patches in [`patches/rexglue`](patches/rexglue/README.md)
-  applied (`0004` is the one that fixes text at higher resolutions)
+  applied (0001–0010; `0004` fixes text at higher resolutions, and 0008–0010 keep 2x and 3x
+  at 60 fps)
 - Your own copy of the game, which codegen reads from
 
 ### What your PC needs
@@ -117,23 +121,26 @@ release is put together.
 | RAM | 4 GB |
 | Storage | About 350 MB with the game unpacked; building it yourself (Option B or the launcher) also needs Microsoft's C++ Build Tools, about 10 GB, and 4 GB free while building |
 
-Raising the internal resolution takes much more GPU power than 1x. See
-[Known issues](#known-issues).
+Raising the internal resolution takes much more GPU power than 1x. 2x and 3x have only been
+tested on a fast recent graphics card (where both hold 60 fps); on slower cards, stay at 1x
+or try 2x.
 
 ---
 
 ## Roadmap
 
-Everything on the roadmap is a work in progress (🚧).
+Legend: ✅ done · 🚧 work in progress or planned
 
 ### This fork's milestones (graphics and performance)
 
 These come first, in roughly this order:
 
-1. 🚧 **Higher internal resolution.** The text bug is fixed (patch 0004 ports the corrected
-   `resolve_downscale` shader from Xenia Canary). Next is making 2x and 3x hold 60 fps.
-2. 🚧 **Overall performance.** Find out where the GPU time goes in each frame (about 10 ms at
-   720p today) and cut it.
+1. ✅ **Higher internal resolution.** The text bug is fixed (patch 0004 ports the corrected
+   `resolve_downscale` shader from Xenia Canary), and 2x and 3x hold 60 fps in matches
+   (patches 0008–0010: the GPU emulation no longer waits for the GPU after every resolve,
+   skips copying stencil data that is known to be zero, and sleeps more precisely).
+2. 🚧 **Overall performance, aimed at lighter hardware.** Next is copying rendered images back
+   to the game only when it actually reads them (about 15 MB a frame is copied today).
 3. 🚧 **Above 60 fps.** The game's logic runs at a fixed 60 steps a second, so uncapping the
    frame rate just speeds the game up. Going above 60 needs interpolated frames or decoupling
    rendering from the logic.
@@ -183,8 +190,8 @@ Current rosters built into the game rather than installed as a mod:
 
 ## Known issues
 
-- **Higher resolutions are slow.** At 2x and 3x the frame rate snaps from 60 to 30 with vsync,
-  even on high-end GPUs. This is what the performance milestone is about.
+- **Online play is off in the releases.** The Xbox Live menu isn't available yet, and the
+  releases contact no server (see the roadmap).
 - **SmartScreen warning.** The executables aren't code-signed. Click **More info**, then
   **Run anyway**.
 - **PlayStation controller not detected.** Steam Input may have taken it over. Quit Steam and
