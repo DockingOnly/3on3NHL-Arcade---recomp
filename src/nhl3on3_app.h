@@ -19,6 +19,7 @@
 #include "nhl3on3_frame_rate.h"
 #include "nhl3on3_settings.h"
 #include "nhl3on3_ui_patch.h"
+#include "nhl3on3_video_settings.h"
 
 class Nhl3on3App : public rex::ReXApp {
  public:
@@ -80,6 +81,9 @@ class Nhl3on3App : public rex::ReXApp {
         rex::ui::ProcessKeyEvent(press);
       });
     });
+    // Window changes from the Visual settings rows (fullscreen) run on the UI thread.
+    nhl3on3::SetUiThreadCaller(
+        [this](std::function<void()> work) { app_context().CallInUIThreadDeferred(std::move(work)); });
   }
 
   // Other hooks available for customization:

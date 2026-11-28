@@ -55,9 +55,12 @@ class Chunk:
     (default `end`) is appended and the rest is filled with unreached bytes.
     """
 
-    def __init__(self, start, end, code, then=None):
+    def __init__(self, start, end, code, then=None, closed=False):
         self.start, self.end, self.code = start, end, code
         self.then = end if then is None else then
+        # closed: the code never falls off its end (a function body that ends
+        # in return), so no jump is appended.
+        self.closed = closed
 
 
 def pool_index(pool, name):
@@ -127,7 +130,7 @@ def assemble(data, chunks, pool):
                 continue
             placed.append((at, ins))
             at += instr_size(at, ins, pool)
-        if at != chunk.end and not (placed and placed[-1][1][0] == "jump"):
+        if at != chunk.end and not chunk.closed and not (placed and placed[-1][1][0] == "jump"):
             ins = ("jump", chunk.then)
             placed.append((at, ins))
             at += instr_size(at, ins, pool)
@@ -937,6 +940,173 @@ def patch_create_session(apt_bytes, const_bytes):
                          (0x1A95, 0x1AE0)], pool_at, bytes(consts)
 
 
+# Rows of Help & Options > Visual. The stock rows come first, as the game lists
+# them; the extra rows are NHL 09 Dynasty and Tournament rows the arcade
+# defines but never shows, borrowed for the runtime's video settings:
+# (borrowed eSetting, its value in fe/ion/main.big, labels). Their titles, the
+# values they read and write and what a change does are in
+# src/nhl3on3_video_settings.cpp, whose rows must stay in this order with
+# these choices. Each label is a string pushed as is, or ("ltxt", key) for the
+# game's own text.
+VISUAL_ROWS = ("CAMERA_SETTING", "HOME_TEAM_PERSPECTIVE", "CONTROL_INDICATOR", "PUCK_TRAILS")
+OFF, ON = ("ltxt", "Off"), ("ltxt", "On")
+VISUAL_EXTRA_ROWS = (
+    ("DYNASTY_SALARYCAP", 69, (OFF, ON)),                          # fullscreen
+    ("DYNASTY_CPU_TRADES", 77, (OFF, ON)),                         # vsync
+    ("DYNASTY_SEASON_OVERTIME_LOSS", 70, (OFF, ON)),               # present_letterbox
+    ("DYNASTY_PLAYOFFS_LENGTH", 71, (OFF, "4X", "8X", "16X")),       # anisotropic_override
+    ("DYNASTY_PLAYOFFS_TIE_BREAK", 72, ("1X", "2X", "3X")),          # resolution_scale
+    ("DYNASTY_TRADE_POPUPS", 74, ("BILINEAR", "FSR", "CAS")),        # present_effect
+)
+# The settings adapter keys settings by its own id, which the game looks up
+# from the script's (src/nhl3on3_video_settings.cpp). Several Dynasty and
+# Tournament settings share one adapter id, and Tournament Round Robin Tie Break
+# shares the game's own Tie Break rule's, so these rows are chosen to have an
+# adapter id no other row on the screen uses.
+#
+# The labels' strings take the place of these, which only the labels of rows
+# the arcade never shows use (Playoff and Elimination Series Length, All-Star
+# Game, Overtime Loss, Round Robin Play Type).
+VISUAL_LABEL_STRINGS = {
+    "1X": "BestOf3", "2X": "BestOf5", "3X": "BestOf7", "4X": "EastVsWest", "8X": "WorldVsNA",
+    "16X": "1Point", "BILINEAR": "SingleKnockout", "FSR": "0Points", "CAS": "TXT_ALL_POOLS",
+}
+# Body [start, end) of each borrowed row's labels and values functions, with
+# its original bytes. None: the function already fits (Off / On, or 0, 1, 2).
+VISUAL_ROW_FUNCTIONS = {
+    "DYNASTY_SALARYCAP": (None, None),
+    "DYNASTY_CPU_TRADES": (None, None),
+    "DYNASTY_SEASON_OVERTIME_LOSS": (
+        (0x61A8, 0x61C0, "a302a55ab901a22c52a302a65ab901a22c52b502a22d403e"), None),
+    "DYNASTY_PLAYOFFS_LENGTH": (
+        (0x60A8, 0x60D2, "a3029f5ab901a22c52a302a05ab901a22c52a302a15ab901a22c52a302a25ab901a2"
+                         "2c52b504a22d403e"),
+        (0x607C, 0x6088, "595ab502b503b504a22d403e")),
+    "DYNASTY_PLAYOFFS_TIE_BREAK": (
+        (0x612C, 0x614D, "a3023d5ab901a22c52a302395ab901a22c52a3023a5ab901a22c52b503a22d403e"),
+        None),
+    "DYNASTY_TRADE_POPUPS": (
+        (0x6294, 0x62B4, "a302a95ab901a22c52a2315ab901a22c52a302095ab901a22c52b503a22d403e"),
+        None),
+}
+# categories[VISUAL].settings = [...]; then, in Be a Pro only, push
+# POSITIONAL_INDICATORS. Be a Pro is not in the arcade, so the whole range is
+# free for the new list.
+VISUAL_LIST, VISUAL_LIST_END = 0x2C2D, 0x2C7E
+
+
+def _new_array(elements):
+    """Body of a function returning new Array(*elements); each element is a
+    list of instructions pushing it. Array takes the last value pushed as
+    element 0."""
+    code = []
+    for element in reversed(elements):
+        code += element
+    return code + [("pushByte", len(elements)), ("pushConst", "Array"), ("newObject",),
+                   ("return",)]
+
+
+def _push_label(label):
+    if isinstance(label, tuple):
+        # _global.ltxt(key); register 1 is _global in these functions.
+        return [("pushConst", label[1]), ("pushOne",), ("pushRegister", 1),
+                ("pushConst", "ltxt"), ("callMethod",)]
+    return [("pushConst", label)]
+
+
+def _push_int(n):
+    return [("pushZero",)] if n == 0 else [("pushOne",)] if n == 1 else [("pushByte", n)]
+
+
+def patch_game_settings(apt_bytes, const_bytes):
+    """gamesettingdata, the rows and categories of the settings screen that
+    Help & Options and the pause menu open.
+
+    Each category is a list of setting ids (_global.Settings.eSetting) built in
+    frame 0; each row is defined there by initSettings(id, title, control type,
+    labels, values), whatever the category lists. labels and values are
+    functions returning arrays; the settings adapter stores a row's value and
+    the row shows labels[values.indexOf(value)]. NHL 09's Dynasty and
+    Tournament rows are all defined but never listed in the arcade.
+
+    Patched: the Visual list also holds VISUAL_EXTRA_ROWS, after the stock rows,
+    each with values 0 .. n-1 and the labels given there.
+    """
+    data = bytearray(apt_bytes)
+    consts = bytearray(const_bytes)
+    apt = apt_dis.Apt(apt_bytes, const_bytes)
+    pool_at = 0x168
+    expect(data, VISUAL_LIST, "a301671ca301661caf134ea200ae23a301a54eae23a301a64eae23a301a74e"
+                              "ae23a301624eb504424f")
+    expect(data, 0x2C56, "ae1971af1caf1daf1f49129d000000000016ae23a301a84e5aa301671ca301661c"
+                         "af134eaf00b2ba")
+    for new, old in VISUAL_LABEL_STRINGS.items():
+        rename_pool_string(consts, apt, pool_at, old, new)
+    pool = frame_pool(apt_dis.Apt(bytes(data), bytes(consts)), pool_at)
+
+    code = [("pushConst", "categories"), ("getVariable",),
+            ("pushConst", "categoryEnum"), ("getVariable",),
+            ("getNamedMember", "VISUAL"), ("getMember",), ("pushConst", "settings")]
+    # initArray takes the last value pushed as element 0.
+    for _name, script_id, _labels in reversed(VISUAL_EXTRA_ROWS):
+        code.append(("pushByte", script_id))
+    for name in reversed(VISUAL_ROWS):
+        code += [("pushValueOfVar", "settingsEnum"), ("pushConst", name), ("getMember",)]
+    code += [("pushByte", len(VISUAL_ROWS) + len(VISUAL_EXTRA_ROWS)), ("initArray",),
+             ("setMember",)]
+    chunks = [Chunk(VISUAL_LIST, VISUAL_LIST_END, code)]
+    ranges = [(VISUAL_LIST, VISUAL_LIST_END + 0x10)]
+    for name, _script_id, labels in VISUAL_EXTRA_ROWS:
+        label_fn, value_fn = VISUAL_ROW_FUNCTIONS[name]
+        for fn, elements in ((label_fn, [_push_label(x) for x in labels]),
+                             (value_fn, [_push_int(i) for i in range(len(labels))])):
+            if fn:
+                start, end, original = fn
+                expect(data, start, original)
+                chunks.append(Chunk(start, end, _new_array(elements), closed=True))
+                ranges.append((start, end))
+    assemble(data, chunks, pool)
+    return bytes(data), ranges, pool_at, bytes(consts)
+
+
+# mcGameSetting (character 25 of gamesettings): the power-up legend is the
+# icons, two images imported from another movie (one per column, unnamed), and
+# powerupScreen, their names and descriptions. (depth, character, x, y)
+POWERUP_LEGEND = ((1, 11, 496.0, 130.0), (3, 12, 26.0, 122.0), (12, 21, 116.0, 132.0))
+OFF_SCREEN_Y = 4000.0
+
+
+def patch_settings_screen(apt_bytes, const_bytes):
+    """gamesettings, the settings screen's layout and controls (rows,
+    scrolling, the category toggle).
+
+    Stock: below the rows, a legend of the eight power-ups (icon, name,
+    description), in every category. The rows run into it once a category has
+    more than five (Visual, with patch_game_settings).
+
+    Patched: the legend's three placements (POWERUP_LEGEND) are moved below
+    the screen. A placement is (type 3, flags, depth, character, matrix a b c d
+    tx ty at +16, ...).
+    """
+    data = bytearray(apt_bytes)
+    apt = apt_dis.Apt(apt_bytes, const_bytes)
+    m = apt.movie_offset
+    sprite = apt.u32(apt.u32(m + 32) + 4 * 25)
+    frames = apt.u32(sprite + 20)
+    count, items = apt.u32(frames), apt.u32(frames + 4)
+    placements = {}
+    for k in range(count):
+        item = apt.u32(items + 4 * k)
+        if apt.u32(item) == 3:
+            placements[apt.u32(item + 8)] = item
+    for depth, character, x, y in POWERUP_LEGEND:
+        item = placements.get(depth)
+        if item is None or apt.u32(item + 12) != character or                 struct.unpack_from(">2f", data, item + 32) != (x, y):
+            raise ValueError(f"no power-up legend placement at depth {depth}; wrong game version?")
+        struct.pack_into(">f", data, item + 36, OFF_SCREEN_Y)
+    return bytes(data), [], None
+
+
 # (archive entry, nested entry of the .apt, nested entry of the .const, patch)
 # patch_select_teams and patch_starting_lineups are left out: they drive the
 # team play lobby through GetControllerLogin requests (lobby_call above) that
@@ -957,6 +1127,9 @@ PATCHES = [
       for name in ("custom_nconsole", "customarcade", "customcoop", "customshootout",
                    "create_nconsole", "createshootout")),
     ("fe/ion/game/screens/online/session/createcoop.big", "0", "1", patch_create_session),
+    ("fe/ion/game/screens/settings/gamesettingdata.big", "0", "1", patch_game_settings),
+    ("fe/ion/external/ion_sports07/screens/misc/gamesettings.big", "0", "1",
+     patch_settings_screen),
 ]
 
 # --- Archive rebuild ---------------------------------------------------------

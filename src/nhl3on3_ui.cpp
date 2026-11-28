@@ -20,6 +20,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
+#include "nhl3on3_video_settings.h"
+
 REXCVAR_DEFINE_BOOL(skip_intro, false, "NHL3on3/General",
                     "Skip the EA Sports Freestyle intro movie at boot");
 
@@ -91,6 +93,8 @@ void Parse(Renames& r, const std::string& spec) {
   r.text.emplace("PLAY A FRIEND", "ONLINE LOBBY");
   // The main menu's quit item exits the game directly (QuitArcadeGame below).
   r.text.emplace("RETURN TO GAME LIBRARY", "QUIT GAME");
+  // Help & Options > Visual: the borrowed rows' titles.
+  nhl3on3::AddVideoRowTitles(r.text);
 }
 
 // Returns the guest address of the replacement for `text`, or 0. Trailing

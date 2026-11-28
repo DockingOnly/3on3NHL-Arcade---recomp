@@ -13,6 +13,7 @@
 // Ported from startupandhold/3on3ArcadeRecomp (MIT; see dist/licenses/3on3ArcadeRecomp.txt).
 
 #include "nhl3on3_settings.h"
+#include "nhl3on3_video_settings.h"
 
 #include <algorithm>
 #include <atomic>
@@ -102,23 +103,24 @@ void LoadOnce() {
   }
 }
 
-// Replaces (or appends) the game_settings line, leaving the rest of the file
-// as the launcher and the player wrote it. Caller holds g_mutex.
-void WriteConfig(const std::string& value) {
+// Replaces (or appends) the `key = toml_value` line, leaving the rest of the
+// file as the launcher and the player wrote it. The file has no tables, so an
+// appended line is a top-level key. Caller holds g_mutex.
+void WriteConfigLine(std::string_view key, std::string_view toml_value) {
   if (g_config_path.empty()) {
     return;
   }
   std::vector<std::string> lines;
   bool crlf = false, replaced = false;
-  const std::string line = fmt::format("{} = \"{}\"", kKey, value);
+  const std::string line = fmt::format("{} = {}", key, toml_value);
   if (std::ifstream in(g_config_path, std::ios::binary); in) {
     for (std::string l; std::getline(in, l);) {
       crlf = crlf || (!l.empty() && l.back() == '\r');
       const size_t start = l.find_first_not_of(" \t");
       std::string_view rest =
           start == std::string::npos ? std::string_view{} : std::string_view(l).substr(start);
-      if (rest.starts_with(kKey)) {
-        rest.remove_prefix(kKey.size());
+      if (rest.starts_with(key)) {
+        rest.remove_prefix(key.size());
         const size_t eq = rest.find_first_not_of(" \t");
         if (eq != std::string_view::npos && rest[eq] == '=') {
           if (!replaced) {
@@ -168,7 +170,7 @@ void Remember(uint32_t id, int32_t value) {
   it->second = value;
   const std::string text = Format(g_saved);
   rex::cvar::SetFlagByName(kKey, text);
-  WriteConfig(text);
+  WriteConfigLine(kKey, fmt::format("\"{}\"", text));
 }
 
 }  // namespace
@@ -178,6 +180,11 @@ namespace nhl3on3 {
 void SetConfigPath(const std::filesystem::path& path) {
   std::lock_guard lock(g_mutex);
   g_config_path = path;
+}
+
+void SaveConfigValue(std::string_view key, std::string_view toml_value) {
+  std::lock_guard lock(g_mutex);
+  WriteConfigLine(key, toml_value);
 }
 
 void UseDefaultGameSettings(bool use_defaults) {
@@ -229,6 +236,10 @@ void NoteDefault(PPCContext& ctx, uint8_t* base, uint32_t adapter, uint32_t id) 
 extern "C" REX_FUNC(sub_82580C90) {
   const uint32_t id = ctx.r4.u32, lr = uint32_t(ctx.lr);
   const int32_t value = ctx.r5.s32;
+  // This port's Visual rows keep their own values (nhl3on3_video_settings.cpp).
+  if (nhl3on3::SetVideoSetting(base, id, value)) {
+    return;
+  }
   if (lr == kMenuChange && id <= kMaxSettingId && ctx.r3.u32) {
     NoteDefault(ctx, base, ctx.r3.u32, id);
   }
@@ -260,6 +271,7 @@ extern "C" REX_FUNC(sub_8258B5D0) {
     return;
   }
   if (!g_restored.load(std::memory_order_relaxed) && !g_restored.exchange(true)) {
+    nhl3on3::MapVideoRows(base);
     std::map<uint32_t, int32_t> saved;
     {
       std::lock_guard lock(g_mutex);
