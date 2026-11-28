@@ -44,6 +44,7 @@ class Nhl3on3App : public rex::ReXApp {
   // given), see nhl3on3_settings.cpp.
   void OnConfigurePaths(rex::PathConfig& paths) override {
     nhl3on3::SetConfigPath(paths.config_path);
+    config_path_ = paths.config_path;
     if (!paths.game_data_root.empty()) {
       return;
     }
@@ -59,6 +60,13 @@ class Nhl3on3App : public rex::ReXApp {
         return;
       }
     }
+  }
+
+  // The config is loaded and the window and renderer do not exist yet: the boot key's reset,
+  // or the rollback of restart-only video settings that never reached the main menu
+  // (nhl3on3_video_settings.cpp).
+  void OnPostInitLogging() override {
+    nhl3on3::StartVideoSettings(config_path_, nhl3on3::BootKeyHeld());
   }
 
   // Patch the front-end screens in data0.big before the runtime opens the game files (logging
@@ -87,7 +95,6 @@ class Nhl3on3App : public rex::ReXApp {
   }
 
   // Other hooks available for customization:
-  // void OnPostInitLogging() override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
@@ -95,4 +102,7 @@ class Nhl3on3App : public rex::ReXApp {
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
+
+ private:
+  std::filesystem::path config_path_;
 };

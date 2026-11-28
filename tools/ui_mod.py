@@ -989,6 +989,11 @@ VISUAL_ROW_FUNCTIONS = {
         (0x6294, 0x62B4, "a302a95ab901a22c52a2315ab901a22c52a302095ab901a22c52b503a22d403e"),
         None),
 }
+# goToPreviousScreen: the storage device check, the "device has changed" popup
+# it leads to, and the save path otherwise. RESTART_QUERY is the eSetting the
+# check reads instead (DYNASTY_WAIVER_POPUPS).
+LEAVE_CHECK, LEAVE_POPUP, LEAVE_SAVE = 0x1B18, 0x1B4C, 0x1B8C
+RESTART_QUERY = 75
 # categories[VISUAL].settings = [...]; then, in Be a Pro only, push
 # POSITIONAL_INDICATORS. Be a Pro is not in the arcade, so the whole range is
 # free for the new list.
@@ -1065,6 +1070,25 @@ def patch_game_settings(apt_bytes, const_bytes):
                 expect(data, start, original)
                 chunks.append(Chunk(start, end, _new_array(elements), closed=True))
                 ranges.append((start, end))
+    # Leaving the screen (goToPreviousScreen) from Help & Options: stock, if
+    # the profile's storage device was removed it shows "device has changed"
+    # (one button, OK, then reallyGoBackScreen); otherwise it saves, then
+    # reallyGoBackScreen. The device check asks instead whether a video
+    # setting that applies on restart changed: the unused
+    # DYNASTY_WAIVER_POPUPS reads 1 then (kRestartQueryScriptId in
+    # src/nhl3on3_video_settings.cpp), and that file gives the message its
+    # "restart the game to apply" text. Register 3 is _global.
+    expect(data, LEAVE_CHECK, "59b903af63a26452870000000000000517b905b5ff49124c129d00000000000e"
+                              "17b9055ab903a301364ea3013752129d00000040")
+    chunks.append(Chunk(LEAVE_CHECK, LEAVE_POPUP, [
+        ("pushByte", RESTART_QUERY),
+        ("pushRegister", 3), ("getNamedMember", "Settings"), ("getNamedMember", "eCategory"),
+        ("getNamedMember", "VISUAL"),
+        ("pushByte", 2), ("pushRegister", 3), ("pushConst", "ION_Settings"), ("getMember",),
+        ("pushConst", "GetCurrentSettingValue"), ("callMethod",),
+        ("not",), ("branchIfTrue", LEAVE_SAVE),
+    ]))
+    ranges.append((LEAVE_CHECK, LEAVE_POPUP + 0x40))
     assemble(data, chunks, pool)
     return bytes(data), ranges, pool_at, bytes(consts)
 

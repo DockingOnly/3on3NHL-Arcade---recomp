@@ -12,13 +12,28 @@
 // the running value: the row shows the choice, the file holds it, and the
 // game uses it next time (the runtime sizes its render targets and output
 // effect at startup).
+//
+// A way back when a restart setting breaks the game:
+// - Rollback. Changing one writes video.pending beside the config, holding
+//   the values the game is running with. The next start marks it as being
+//   tried; reaching the main menu removes it. A start that finds it already
+//   being tried means the last one never got to the menu (crash, hang, black
+//   screen), so those values go back into the config, and the main menu's
+//   ticker says so.
+// - Holding Shift, or LB + RB on a controller, while the game starts puts all
+//   of these settings back to their defaults (nhl3on3_boot_key.cpp).
+// Leaving the settings screen with a restart setting changed shows "restart
+// the game to apply" (tools/ui_mod.py asks through kRestartQueryScriptId).
 
 #include "nhl3on3_video_settings.h"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,6 +88,25 @@ std::array<Row, 6> g_rows{{
 std::atomic<bool> g_mapped{false};
 std::function<void(std::function<void()>)> g_ui_thread;
 
+// DYNASTY_WAIVER_POPUPS, never listed: the settings screen reads it when the
+// player leaves, as 1 while a restart setting has changed.
+constexpr uint32_t kRestartQueryScriptId = 75;
+uint32_t g_restart_query_adapter = 0xFFFFFFFF;
+
+std::filesystem::path g_pending_path;
+// The main menu's ticker text this session, after a rollback or a reset.
+std::string g_notice;
+std::atomic<bool> g_menu_reached{false};
+
+// Localized texts this file watches for or replaces (VideoTextOverride).
+constexpr std::string_view kMenuItem = "PLAY NOW";
+constexpr std::string_view kMenuTicker =
+    "SELECT AN ONLINE FEATURE IN ORDER TO SIGN IN TO THE EA SERVERS";
+// The start of the settings screen's storage-device message
+// (DeviceHasChangedOrNoLongerAvailable), which tools/ui_mod.py shows when a
+// restart setting changed; no storage device ever changes here.
+constexpr std::string_view kRestartPopupText = "WARNING!  YOUR SELECTED STORAGE DEVICE";
+
 uint32_t Load32(const uint8_t* base, uint32_t address) {
   const uint8_t* p = base + address;
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
@@ -116,6 +150,19 @@ void MapOnce(const uint8_t* base) {
     row.adapter_id = id;
     REXLOG_INFO("[visual] {} ({}) is adapter setting {}", row.title, row.setting, id);
   }
+  const uint32_t query = adapter_id(kRestartQueryScriptId);
+  bool shared = false;
+  for (uint32_t s = 0; s <= kMaxScriptId; ++s) {
+    const bool unused = s >= kFirstUnusedScriptId && s <= kLastUnusedScriptId;
+    shared = shared || (s != kRestartQueryScriptId && !unused && adapter_id(s) == query);
+  }
+  for (const auto& row : g_rows) {
+    shared = shared || row.adapter_id == query;
+  }
+  g_restart_query_adapter = shared ? kNoRow : query;
+  if (shared) {
+    REXLOG_WARN("[visual] no restart prompt: adapter setting {} is shared", query);
+  }
   g_mapped.store(true, std::memory_order_relaxed);
 }
 
@@ -151,12 +198,103 @@ int32_t CurrentChoice(const Row& row) {
   return 0;
 }
 
+// Caller holds g_mutex.
+bool RestartPending() {
+  for (const auto& row : g_rows) {
+    if (row.pending >= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string Unquote(std::string value) {
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+    value = value.substr(1, value.size() - 2);
+  }
+  return value;
+}
+
+struct PendingFile {
+  bool trying = false;
+  std::vector<std::pair<std::string, std::string>> values;  // key, TOML value
+};
+
+std::optional<PendingFile> ReadPending() {
+  if (g_pending_path.empty()) {
+    return std::nullopt;
+  }
+  std::ifstream in(g_pending_path);
+  if (!in) {
+    return std::nullopt;
+  }
+  PendingFile file;
+  for (std::string line; std::getline(in, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const size_t eq = line.find(" = ");
+    if (line.empty() || line[0] == '#' || eq == std::string::npos) {
+      continue;
+    }
+    const std::string key = line.substr(0, eq), value = line.substr(eq + 3);
+    if (key == "state") {
+      file.trying = Unquote(value) == "trying";
+    } else {
+      file.values.emplace_back(key, value);
+    }
+  }
+  return file;
+}
+
+void WritePending(const PendingFile& file) {
+  std::ofstream out(g_pending_path, std::ios::trunc);
+  out << "# Written by nhl3on3 when a video setting that applies on restart changed.\n"
+         "# The values below are the ones the game ran with before. If the game does\n"
+         "# not reach its main menu with the new ones, it puts these back.\n"
+      << "state = \"" << (file.trying ? "trying" : "saved") << "\"\n";
+  for (const auto& [key, value] : file.values) {
+    out << key << " = " << value << "\n";
+  }
+}
+
+void RemovePending() {
+  std::error_code ec;
+  std::filesystem::remove(g_pending_path, ec);
+}
+
+// Caller holds g_mutex. Records the running values of the restart rows
+// changed this session; no file once none differs from what the game runs.
+void UpdatePending() {
+  if (g_pending_path.empty()) {
+    return;
+  }
+  PendingFile file;
+  for (const auto& row : g_rows) {
+    if (row.pending >= 0) {
+      const std::string running = rex::cvar::GetFlagByName(row.cvar);
+      file.values.emplace_back(row.cvar,
+                               row.quoted ? fmt::format("\"{}\"", running) : running);
+    }
+  }
+  if (file.values.empty()) {
+    RemovePending();
+  } else {
+    WritePending(file);
+  }
+}
+
 }  // namespace
 
 namespace nhl3on3 {
 
 bool GetVideoSetting(const uint8_t* base, uint32_t id, int32_t& value) {
   std::lock_guard lock(g_mutex);
+  MapOnce(base);
+  if (id == g_restart_query_adapter && id != kNoRow) {
+    value = RestartPending() ? 1 : 0;
+    return true;
+  }
   const Row* row = Find(base, id);
   if (!row) {
     return false;
@@ -169,6 +307,10 @@ bool SetVideoSetting(const uint8_t* base, uint32_t id, int32_t value) {
   std::function<void()> on_ui_thread;
   {
     std::lock_guard lock(g_mutex);
+    MapOnce(base);
+    if (id == g_restart_query_adapter && id != kNoRow) {
+      return true;
+    }
     Row* row = Find(base, id);
     if (!row) {
       return false;
@@ -182,7 +324,9 @@ bool SetVideoSetting(const uint8_t* base, uint32_t id, int32_t value) {
                 row->apply == Apply::kRestart ? " (on restart)" : "");
     switch (row->apply) {
       case Apply::kRestart:
-        row->pending = value;
+        // Back to what the game runs with: nothing left to restart for.
+        row->pending = choice == rex::cvar::GetFlagByName(row->cvar) ? -1 : value;
+        UpdatePending();
         break;
       case Apply::kLive:
         rex::cvar::SetFlagByName(row->cvar, choice);
@@ -208,6 +352,69 @@ bool SetVideoSetting(const uint8_t* base, uint32_t id, int32_t value) {
 void MapVideoRows(const uint8_t* base) {
   std::lock_guard lock(g_mutex);
   MapOnce(base);
+}
+
+void StartVideoSettings(const std::filesystem::path& config_path, bool reset) {
+  std::lock_guard lock(g_mutex);
+  g_pending_path = config_path.parent_path() / "video.pending";
+  if (reset) {
+    for (const auto& row : g_rows) {
+      RemoveConfigValue(row.cvar);
+      rex::cvar::ResetToDefault(row.cvar);
+    }
+    RemovePending();
+    g_notice = "VIDEO SETTINGS ARE BACK TO THEIR DEFAULTS";
+    REXLOG_WARN("[visual] boot key held: video settings reset to their defaults");
+    return;
+  }
+  auto file = ReadPending();
+  if (!file) {
+    return;
+  }
+  if (!file->trying) {
+    file->trying = true;
+    WritePending(*file);
+    REXLOG_INFO("[visual] starting with changed video settings; they stay once the main "
+                "menu shows");
+    return;
+  }
+  // The last start with these settings never reached the main menu.
+  for (const auto& [key, value] : file->values) {
+    SaveConfigValue(key, value);
+    rex::cvar::SetFlagByName(key, Unquote(value));
+    REXLOG_WARN("[visual] the last start never reached the main menu; {} back to {}", key,
+                value);
+  }
+  rex::cvar::ClearPendingRestartFlags();
+  RemovePending();
+  g_notice = "VIDEO SETTINGS PUT BACK: THE GAME DID NOT START WITH THE LAST ONES";
+}
+
+std::optional<std::string> VideoTextOverride(std::string_view text) {
+  const size_t end = text.find_last_not_of(' ');
+  text = text.substr(0, end == std::string_view::npos ? 0 : end + 1);
+  std::lock_guard lock(g_mutex);
+  if (text == kMenuItem && !g_menu_reached.exchange(true)) {
+    if (const auto file = ReadPending(); file && file->trying) {
+      RemovePending();
+      REXLOG_INFO("[visual] main menu reached; the changed video settings stay");
+    }
+  }
+  if (text == kMenuTicker && !g_notice.empty()) {
+    return g_notice;
+  }
+  if (text.starts_with(kRestartPopupText)) {
+    std::string names;
+    for (const auto& row : g_rows) {
+      if (row.pending >= 0) {
+        std::string_view title = row.title;
+        title = title.substr(0, title.find(" ("));
+        names += fmt::format("{}{}", names.empty() ? "" : " AND ", title);
+      }
+    }
+    return fmt::format("RESTART THE GAME TO APPLY THE NEW {}.", names);
+  }
+  return std::nullopt;
 }
 
 void AddVideoRowTitles(std::unordered_map<std::string, std::string>& renames) {

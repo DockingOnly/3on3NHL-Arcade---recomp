@@ -22,6 +22,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -103,16 +104,17 @@ void LoadOnce() {
   }
 }
 
-// Replaces (or appends) the `key = toml_value` line, leaving the rest of the
-// file as the launcher and the player wrote it. The file has no tables, so an
-// appended line is a top-level key. Caller holds g_mutex.
-void WriteConfigLine(std::string_view key, std::string_view toml_value) {
+// Replaces (or appends) the `key = toml_value` line, or with no value removes
+// it, leaving the rest of the file as the launcher and the player wrote it.
+// The file has no tables, so an appended line is a top-level key. Caller
+// holds g_mutex.
+void WriteConfigLine(std::string_view key, std::optional<std::string_view> toml_value) {
   if (g_config_path.empty()) {
     return;
   }
   std::vector<std::string> lines;
-  bool crlf = false, replaced = false;
-  const std::string line = fmt::format("{} = {}", key, toml_value);
+  bool crlf = false, replaced = !toml_value;
+  const std::string line = toml_value ? fmt::format("{} = {}", key, *toml_value) : "";
   if (std::ifstream in(g_config_path, std::ios::binary); in) {
     for (std::string l; std::getline(in, l);) {
       crlf = crlf || (!l.empty() && l.back() == '\r');
@@ -127,7 +129,7 @@ void WriteConfigLine(std::string_view key, std::string_view toml_value) {
             lines.push_back(line);
             replaced = true;
           }
-          continue;
+          continue;  // a later duplicate, or the line being removed
         }
       }
       if (!l.empty() && l.back() == '\r') {
@@ -185,6 +187,11 @@ void SetConfigPath(const std::filesystem::path& path) {
 void SaveConfigValue(std::string_view key, std::string_view toml_value) {
   std::lock_guard lock(g_mutex);
   WriteConfigLine(key, toml_value);
+}
+
+void RemoveConfigValue(std::string_view key) {
+  std::lock_guard lock(g_mutex);
+  WriteConfigLine(key, std::nullopt);
 }
 
 void UseDefaultGameSettings(bool use_defaults) {

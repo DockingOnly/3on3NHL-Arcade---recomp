@@ -30,6 +30,7 @@ set(NHL3ON3_SOURCES
     src/nhl3on3_ui_patch.cpp
     src/nhl3on3_settings.cpp
     src/nhl3on3_video_settings.cpp
+    src/nhl3on3_boot_key.cpp
     src/nhl3on3_frame_rate.cpp
     src/nhl3on3_request_wait.cpp
 )

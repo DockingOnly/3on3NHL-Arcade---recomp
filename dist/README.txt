@@ -49,10 +49,19 @@ Settings
 --------
 nhl3on3.toml holds the settings the game needs; command-line flags override it.
 
-Internal resolution: add "resolution_scale = 2" to nhl3on3.toml (or start the game
-with --resolution_scale=2) to render at 2560x1440 instead of 1280x720, or 3 for
-3840x2160. In testing on a fast recent graphics card, 2 and 3 both hold 60 fps.
-Press F3 in-game to show the frame rate.
+Video settings are in the game: Help and Options > Settings > Visual Settings has
+Fullscreen, VSync, Letterbox, Texture Filtering, Resolution and Upscaling. Changes
+are saved to nhl3on3.toml. Resolution and Upscaling apply the next time the game
+starts.
+
+Resolution 2X renders at 2560x1440 instead of 1280x720, and 3X at 3840x2160. In
+testing on a fast recent graphics card, 2X and 3X both hold 60 fps. Press F3
+in-game to show the frame rate.
+
+If a video setting stops the game from starting: if the game doesn't reach its main
+menu after you change Resolution or Upscaling, the next start goes back to the
+previous values on its own. To put every video setting back to its default, hold
+Shift (or LB + RB on a controller) while the game starts.
 
 Known issues
 ------------

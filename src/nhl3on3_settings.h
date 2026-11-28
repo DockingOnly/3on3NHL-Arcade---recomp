@@ -12,6 +12,10 @@ void SetConfigPath(const std::filesystem::path& path);
 // "fsr"), replacing the key's line or adding one; the rest is left alone.
 void SaveConfigValue(std::string_view key, std::string_view toml_value);
 
+// Removes the key's line from that file, so the setting is back at its default
+// next time.
+void RemoveConfigValue(std::string_view key);
+
 // In an online game every console runs the same simulation, so options
 // (CPU difficulty, rules, ...) must agree; nothing sends one console's to the
 // others. While true, the options game_settings changed are back at the

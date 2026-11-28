@@ -91,8 +91,10 @@ full log is `logs\build.log`. When a newer release comes out, its launcher offer
 and your current build stays in place until the new one is ready.
 [BUILDING.md](BUILDING.md#5-assemble-a-release) explains how a release is put together.
 
-To raise the internal resolution, add `resolution_scale = 2` (2560x1440) or `3` (3840x2160)
-to `nhl3on3.toml` next to `nhl3on3.exe`. Press **F3** in game for the frame-rate overlay.
+To raise the internal resolution, set **Resolution** under **Help & Options › Settings ›
+Visual Settings** to 2X (2560x1440) or 3X (3840x2160) and restart, or add
+`resolution_scale = 2` or `3` to `nhl3on3.toml` next to `nhl3on3.exe`. Press **F3** in game
+for the frame-rate overlay.
 
 ### Upstream's prebuilt release
 
@@ -144,11 +146,13 @@ These come first, in roughly this order:
 3. 🚧 **Above 60 fps.** The game's logic runs at a fixed 60 steps a second, so uncapping the
    frame rate just speeds the game up. Going above 60 needs interpolated frames or decoupling
    rendering from the logic.
-4. 🚧 **Video options in the game's own menu.** Fullscreen, VSync, resolution scale, texture
-   filtering and upscaling as new rows under **Help & Options › Visual**, so they work the same
-   on PC and Android and with a controller. Options that need a restart are marked as such, and
-   if a new setting stops the game from reaching the main menu, the next start puts the old
-   values back. `nhl3on3.toml` and command-line flags still override everything.
+4. ✅ **Video options in the game's own menu** (not in a release yet). Fullscreen, VSync,
+   Letterbox, Texture Filtering, Resolution and Upscaling are rows under **Help & Options ›
+   Visual**, so they work the same on PC and Android and with a controller, and the power-up
+   legend that sat under the rows is gone. Changes are saved to `nhl3on3.toml`. Resolution and
+   Upscaling are marked "(restart)", and leaving the screen after changing one says to restart.
+   If a new setting stops the game from reaching the main menu, the next start puts the old
+   values back; holding Shift (or LB + RB) while the game starts resets every video setting.
 5. 🚧 **DLSS** (and possibly other upscalers) on supported GPUs.
 6. 🚧 **Controller-aware button prompts** that show Xbox or PlayStation buttons to match the
    connected pad.

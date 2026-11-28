@@ -108,11 +108,15 @@ uint32_t FindReplacement(rex::memory::Memory* memory, const std::string& text) {
   }
   const size_t end = text.find_last_not_of("\r\n");
   const size_t trimmed = end == std::string::npos ? 0 : end + 1;
-  const auto it = r.text.find(text.substr(0, trimmed));
-  if (it == r.text.end()) {
+  std::string replacement;
+  // The video settings' messages (nhl3on3_video_settings.cpp) change during a session.
+  if (auto video = nhl3on3::VideoTextOverride(text.substr(0, trimmed))) {
+    replacement = *video + text.substr(trimmed);
+  } else if (const auto it = r.text.find(text.substr(0, trimmed)); it != r.text.end()) {
+    replacement = it->second + text.substr(trimmed);
+  } else {
     return 0;
   }
-  const std::string replacement = it->second + text.substr(trimmed);
   auto& address = r.guest[replacement];
   if (!address) {
     const uint32_t size = uint32_t(replacement.size() + 1);
